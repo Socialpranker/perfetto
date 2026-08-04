@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {PinIntentKind} from './metricUtils';
 import {SimpleProcessMetricHandler} from './simpleProcessMetricHandler';
 
 export const pinActivityOrBinderLeaksMetricsInstance =
-  new SimpleProcessMetricHandler(
-    [
+  new SimpleProcessMetricHandler({
+    kind: PinIntentKind.ActivityOrBinderLeaks,
+    matchers: [
       /(?<processName>.*)_Activities-last-first-diff/,
       /(?<processName>.*)_View-last-first-diff/,
       /(?<processName>.*)_ViewRootImpl-last-first-diff/,
       /(?<processName>.*)_Local Binders-last-first-diff/,
       /(?<processName>.*)_Proxy Binders-last-first-diff/,
     ],
-    ['Heap size'],
-  );
+    trackPrefixMatchers: ['Heap size'],
+    dictionaryKeyAliases: ['activityOrBinderLeaks', 'activity_or_binder_leaks'],
+  });

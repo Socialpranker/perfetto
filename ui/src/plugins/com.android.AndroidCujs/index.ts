@@ -56,6 +56,9 @@ const JANK_CUJ_QUERY_PRECONDITIONS = `
  */
 function cujNameInList(cujNames: string | string[]): string {
   const cujNamesList = typeof cujNames === 'string' ? [cujNames] : cujNames;
+  if (cujNamesList.includes('*')) {
+    return '';
+  }
   return cujNamesList.length > 0
     ? cujNamesList.map((name) => `'L<${name}>','J<${name}>'`).join(',')
     : '';
@@ -260,12 +263,12 @@ function generateCujTrackConfig(
 export default class implements PerfettoPlugin {
   static readonly id = 'com.android.AndroidCujs';
   static readonly dependencies = [QueryPagePlugin];
-  async onTraceLoad(ctx: Trace): Promise<void> {
+  async onTraceLoad(ctx: Trace) {
     ctx.commands.registerCommand({
       id: 'com.android.PinJankCUJs',
       name: 'Add track: Android jank CUJs',
       callback: async () => {
-        await this.pinJankCujs(ctx);
+        await pinJankCujs(ctx, '*');
       },
     });
 
@@ -285,7 +288,7 @@ export default class implements PerfettoPlugin {
       id: 'com.android.PinLatencyCUJs',
       name: 'Add track: Android latency CUJs',
       callback: async () => {
-        await this.pinLatencyCujs(ctx);
+        await pinLatencyCujs(ctx, '*');
       },
     });
 
@@ -317,20 +320,41 @@ export default class implements PerfettoPlugin {
       },
     });
   }
+}
 
-  async pinJankCujs(ctx: Trace) {
-    await ctx.engine.query(JANK_CUJ_QUERY_PRECONDITIONS);
-    await addJankCUJDebugTrack(ctx, 'Jank CUJs');
-  }
+/**
+ * Queries jank CUJ slice summaries and adds a debug track pinning Android
+ * Jank CUJs found in the trace.
+ *
+ * @param {Trace} ctx Trace context.
+ * @param {string | string[]} [cujName] Specific CUJ name to pin, or '*' for all CUJs.
+ */
+export async function pinJankCujs(
+  ctx: Trace,
+  cujName: string | string[] = '*',
+) {
+  await ctx.engine.query(JANK_CUJ_QUERY_PRECONDITIONS);
+  const trackName =
+    cujName === '*' || (Array.isArray(cujName) && cujName.includes('*'))
+      ? 'Jank CUJs'
+      : `Jank CUJ: ${cujName}`;
+  return await addJankCUJDebugTrack(ctx, trackName, cujName);
+}
 
-  async pinLatencyCujs(ctx: Trace) {
-    addDebugSliceTrack({
-      trace: ctx,
-      data: {
-        sqlSource: LATENCY_CUJ_QUERY,
-        columns: LATENCY_COLUMNS,
-      },
-      title: 'Latency CUJs',
-    });
-  }
+/**
+ * Queries latency CUJ slice summaries and adds a debug track pinning Android
+ * Latency CUJs found in the trace.
+ *
+ * @param {Trace} ctx Trace context.
+ * @param {string | string[]} [cujName] Specific CUJ name to pin, or '*' for all CUJs.
+ */
+export async function pinLatencyCujs(
+  ctx: Trace,
+  cujName: string | string[] = '*',
+) {
+  const trackName =
+    cujName === '*' || (Array.isArray(cujName) && cujName.includes('*'))
+      ? 'Latency CUJs'
+      : `Latency CUJ: ${cujName}`;
+  return await addLatencyCUJDebugTrack(ctx, trackName, cujName);
 }

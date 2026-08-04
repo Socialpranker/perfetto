@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {PinIntentKind} from './metricUtils';
 import {SimpleProcessMetricHandler} from './simpleProcessMetricHandler';
 
-export const pinGPUMemoryMetricsInstance = new SimpleProcessMetricHandler(
-  [/perfetto_android_gpu-(?<processName>.*)-mem_.*/],
-  [
+export const pinGPUMemoryMetricsInstance = new SimpleProcessMetricHandler({
+  kind: PinIntentKind.GpuMemory,
+  matchers: [/perfetto_android_gpu-(?<processName>.*)-mem_.*/],
+  trackPrefixMatchers: [
     'GPU Memory',
     'dmabuf allocs',
     'mem.gralloc.allocations',
     'mem.gralloc.buffers',
   ],
-  [/^GPU completion$/],
-);
+  trackRegexpMatchers: [/^GPU completion$/],
+  dictionaryKeyAliases: ['gpuMemory', 'gpu_memory'],
+});

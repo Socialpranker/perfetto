@@ -12,18 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {CujMetricData, MetricHandler} from './metricUtils';
+import {
+  ALL_JANK_CUJS_FLAG_ALIASES,
+  ALL_LATENCY_CUJS_FLAG_ALIASES,
+  CUJ_FIELD_ALIASES,
+  extractBooleanFlag,
+  extractCujName,
+  isValidDictionaryRequest,
+  PinIntentKind,
+  type CujMetricData,
+  type MetricHandler,
+} from './metricUtils';
 import type {Trace} from '../../../public/trace';
-import {addJankCUJDebugTrack} from '../../com.android.AndroidCujs';
+import {
+  pinJankCujs as pinAllJankCujsFromPlugin,
+  pinLatencyCujs as pinAllLatencyCujsFromPlugin,
+} from '../../com.android.AndroidCujs';
 
-/** Pins a single CUJ from CUJ scoped metrics. */
-class PinCujMetricHandler implements MetricHandler {
-  /**
-   * Matches metric key & return parsed data if successful.
-   *
-   * @param {string} metricKey The metric key to match.
-   * @returns {CujMetricData | undefined} Parsed data or undefined if no match.
-   */
+/** Pins a single CUJ or all CUJs from CUJ scoped metrics. */
+class PinCujMetricHandler implements MetricHandler<CujMetricData> {
+  public readonly kind = PinIntentKind.Cuj;
+
   public match(metricKey: string): CujMetricData | undefined {
     const matcher =
       /perfetto_cuj_(?<process>.*)-(?<cujName>.*)-.*-(?:weighted_)?missed_.*/;
@@ -36,20 +45,32 @@ class PinCujMetricHandler implements MetricHandler {
     };
   }
 
-  /**
-   * Adds the debug tracks for cuj Scoped jank metrics
-   *
-   * @param {CujMetricData} metricData Parsed metric data for the cuj scoped jank
-   * @param {Trace} ctx PluginContextTrace for trace related properties and methods
-   * @returns {void} Adds one track for Jank CUJ slice and one for Janky CUJ frames
-   */
-  public async addMetricTrack(metricData: CujMetricData, ctx: Trace) {
-    this.pinSingleCuj(ctx, metricData.cujName);
+  public parseRequest(item: Record<string, string>): CujMetricData | undefined {
+    if (
+      !isValidDictionaryRequest(item, this.kind, [
+        ...CUJ_FIELD_ALIASES,
+        ...ALL_JANK_CUJS_FLAG_ALIASES,
+        ...ALL_LATENCY_CUJS_FLAG_ALIASES,
+      ])
+    ) {
+      return undefined;
+    }
+    if (
+      extractBooleanFlag(item, ALL_JANK_CUJS_FLAG_ALIASES) ||
+      extractBooleanFlag(item, ALL_LATENCY_CUJS_FLAG_ALIASES)
+    ) {
+      return {cujName: '*'};
+    }
+    const cujName = extractCujName(item);
+    if (cujName !== undefined) {
+      return {cujName};
+    }
+    return undefined;
   }
 
-  private pinSingleCuj(ctx: Trace, cujName: string) {
-    const trackName = `Jank CUJ: ${cujName}`;
-    addJankCUJDebugTrack(ctx, trackName, cujName);
+  public async addMetricTrack(metricData: CujMetricData, ctx: Trace) {
+    await pinAllJankCujsFromPlugin(ctx, metricData.cujName);
+    await pinAllLatencyCujsFromPlugin(ctx, metricData.cujName);
   }
 }
 

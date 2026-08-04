@@ -12,14 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {
-  NotificationsBlockingCallMetricData,
-  MetricHandler,
+import {
+  AGGREGATION_FIELD_ALIASES,
+  extractAggregation,
+  extractNotificationName,
+  isValidDictionaryRequest,
+  JANK_CUJ_QUERY_PRECONDITIONS,
+  NOTIFICATION_FIELD_ALIASES,
+  PinIntentKind,
+  type NotificationsBlockingCallMetricData,
+  type MetricHandler,
 } from './metricUtils';
 import type {Trace} from '../../../public/trace';
 import {addDebugSliceTrack} from '../../../components/tracks/debug_tracks';
 
-class BlockingCallMetricHandler implements MetricHandler {
+class BlockingCallMetricHandler implements MetricHandler<NotificationsBlockingCallMetricData> {
+  public readonly kind = PinIntentKind.NotificationBlockingCall;
+
   /**
    * Matches metric key for notifications blocking call metrics & return parsed data if successful.
    *
@@ -42,6 +51,25 @@ class BlockingCallMetricHandler implements MetricHandler {
     return metricData;
   }
 
+  public parseRequest(
+    item: Record<string, string>,
+  ): NotificationsBlockingCallMetricData | undefined {
+    if (
+      !isValidDictionaryRequest(item, this.kind, [
+        ...NOTIFICATION_FIELD_ALIASES,
+        ...AGGREGATION_FIELD_ALIASES,
+      ])
+    ) {
+      return undefined;
+    }
+    const notificationName = extractNotificationName(item);
+    if (notificationName === undefined) {
+      return undefined;
+    }
+    const aggregation = extractAggregation(item) ?? 'cnt';
+    return {notificationName, aggregation};
+  }
+
   /**
    * Adds the debug tracks for Notifications Blocking Call metrics
    *
@@ -49,10 +77,11 @@ class BlockingCallMetricHandler implements MetricHandler {
    * @param {Trace} ctx PluginContextTrace for trace related properties and methods
    * @returns {void} Adds one track for Notifications Blocking Call slice of metric
    */
-  public addMetricTrack(
+  public async addMetricTrack(
     metricData: NotificationsBlockingCallMetricData,
     ctx: Trace,
-  ): void {
+  ) {
+    await ctx.engine.query(JANK_CUJ_QUERY_PRECONDITIONS);
     const config = this.notificationsBlockingCallTrackConfig(metricData);
     addDebugSliceTrack({trace: ctx, ...config});
   }

@@ -13,7 +13,18 @@
 // limitations under the License.
 
 import {
+  AGGREGATION_FIELD_ALIASES,
+  BLOCKING_CALL_FIELD_ALIASES,
+  CUJ_FIELD_ALIASES,
   expandProcessName,
+  extractAggregation,
+  extractBlockingCallName,
+  extractCujName,
+  extractProcess,
+  isValidDictionaryRequest,
+  JANK_CUJ_QUERY_PRECONDITIONS,
+  PinIntentKind,
+  PROCESS_FIELD_ALIASES,
   type BlockingCallMetricData,
   type MetricHandler,
 } from './metricUtils';
@@ -28,7 +39,9 @@ import {
 } from '../../../components/tracks/debug_tracks';
 import {LONG, type QueryResult} from '../../../trace_processor/query_result';
 
-class BlockingCallMetricHandler implements MetricHandler {
+class BlockingCallMetricHandler implements MetricHandler<BlockingCallMetricData> {
+  public readonly kind = PinIntentKind.CujBlockingCall;
+
   /**
    * Matches metric key for blocking call and per-frame blocking call metrics & return parsed data
    * if successful.
@@ -52,6 +65,29 @@ class BlockingCallMetricHandler implements MetricHandler {
     return metricData;
   }
 
+  public parseRequest(
+    item: Record<string, string>,
+  ): BlockingCallMetricData | undefined {
+    if (
+      !isValidDictionaryRequest(item, this.kind, [
+        ...PROCESS_FIELD_ALIASES,
+        ...CUJ_FIELD_ALIASES,
+        ...BLOCKING_CALL_FIELD_ALIASES,
+        ...AGGREGATION_FIELD_ALIASES,
+      ])
+    ) {
+      return undefined;
+    }
+    const cujName = extractCujName(item);
+    const blockingCallName = extractBlockingCallName(item);
+    if (cujName === undefined || blockingCallName === undefined) {
+      return undefined;
+    }
+    const process = extractProcess(item) ?? 'com.android.systemui';
+    const aggregation = extractAggregation(item) ?? 'mean_dur_per_frame_ns-max';
+    return {process, cujName, blockingCallName, aggregation};
+  }
+
   /**
    * Adds the debug tracks for Blocking Call metrics
    *
@@ -60,6 +96,7 @@ class BlockingCallMetricHandler implements MetricHandler {
    * @returns {void} Adds one track for Jank CUJ slice and one for Janky CUJ frames
    */
   public async addMetricTrack(metricData: BlockingCallMetricData, ctx: Trace) {
+    await ctx.engine.query(JANK_CUJ_QUERY_PRECONDITIONS);
     this.pinSingleCuj(ctx, metricData);
     const config = this.blockingCallTrackConfig(metricData);
     addDebugSliceTrack({trace: ctx, ...config});

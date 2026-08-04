@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {PinIntentKind} from './metricUtils';
 import {SimpleProcessMetricHandler} from './simpleProcessMetricHandler';
 
-export const pinBitmapMetricsInstance = new SimpleProcessMetricHandler(
-  [/^perfetto_android_bitmap_metric_(.*)_val-(?<processName>.*)/],
-  [
+export const pinBitmapMetricsInstance = new SimpleProcessMetricHandler({
+  kind: PinIntentKind.BitmapMemory,
+  matchers: [/^perfetto_android_bitmap_metric_(.*)_val-(?<processName>.*)/],
+  trackPrefixMatchers: [
     'Bitmap Count',
     'Bitmap Memory',
     'dmabuf allocs',
     'mem.gralloc.allocations',
     'mem.gralloc.buffers',
   ],
-);
+  dictionaryKeyAliases: ['bitmapMemory', 'bitmap_memory'],
+});

@@ -12,9 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {PinIntentKind} from './metricUtils';
 import {SimpleProcessMetricHandler} from './simpleProcessMetricHandler';
 
-export const pinDirtyMemoryMetricsInstance = new SimpleProcessMetricHandler(
-  [/perfetto_android_mem-(?<processName>.*)-total_counters-anon_and_swap-(.*)/],
-  ['Heap size', 'mem.rss.anon', 'mem.swap'],
-);
+export const pinDirtyMemoryMetricsInstance = new SimpleProcessMetricHandler({
+  kind: PinIntentKind.DirtyMemory,
+  matchers: [
+    /perfetto_android_mem-(?<processName>.*)-total_counters-anon_and_swap-(.*)/,
+  ],
+  trackPrefixMatchers: ['Heap size', 'mem.rss.anon', 'mem.swap'],
+  dictionaryKeyAliases: ['dirtyMemory', 'dirty_memory'],
+});

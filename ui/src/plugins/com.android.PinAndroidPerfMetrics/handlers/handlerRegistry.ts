@@ -26,7 +26,16 @@ import {pinActivityOrBinderLeaksMetricsInstance} from './pinActivityOrBinderLeak
 import {pinHardwareBufferMemoryMetricsInstance} from './pinHardwareBufferMemoryMetricsHandler';
 import {pinGlobalDmaHeapSizeMetricsInstance} from './pinGlobalDmaHeapSizeMetricsHandler';
 
-// TODO: b/337774166 - Add handlers for the metric name categories here
+/**
+ * HOW TO ADD A NEW METRIC HANDLER:
+ * 1. Define a class implementing `MetricHandler<MyMetricData>` in its own file.
+ *    - Assign a unique `readonly kind: PinIntentKind`.
+ *    - Implement `match(metricKey: string)` to parse metric strings (e.g. regexes).
+ *    - (Optional) Implement `parseRequest(item: Record<string, string>)` to parse dictionaries.
+ *    - Implement `addMetricTrack(metricData, ctx)` to pin track(s), including any SQL query preconditions.
+ * 2. Add an instance of your handler to `METRIC_HANDLERS` below.
+ * That's it! String parsing, dictionary parsing, and track pinning will work automatically.
+ */
 export const METRIC_HANDLERS: MetricHandler[] = [
   pinCujInstance,
   pinCujScopedJankInstance,

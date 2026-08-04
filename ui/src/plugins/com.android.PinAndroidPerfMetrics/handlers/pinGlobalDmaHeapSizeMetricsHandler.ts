@@ -13,17 +13,36 @@
 // limitations under the License.
 
 import type {Trace} from '../../../public/trace';
-import type {
-  GlobalDmaHeapMetricData,
-  MetricData,
-  MetricHandler,
+import {
+  extractBooleanFlag,
+  GLOBAL_DMA_HEAP_FLAG_ALIASES,
+  isValidDictionaryRequest,
+  PinIntentKind,
+  type GlobalDmaHeapMetricData,
+  type MetricData,
+  type MetricHandler,
 } from './metricUtils';
 
-export class PinGlobalDmaHeapSizeMetricsHandler implements MetricHandler {
+export class PinGlobalDmaHeapSizeMetricsHandler implements MetricHandler<GlobalDmaHeapMetricData> {
+  public readonly kind = PinIntentKind.GlobalDmaHeap;
   private readonly matcher = /perfetto_android_dma_heap-(.*)_size_bytes-.*/;
 
   public match(metricKey: string): GlobalDmaHeapMetricData | undefined {
     if (this.matcher.test(metricKey)) {
+      return {};
+    }
+    return undefined;
+  }
+
+  public parseRequest(
+    item: Record<string, string>,
+  ): GlobalDmaHeapMetricData | undefined {
+    if (
+      !isValidDictionaryRequest(item, this.kind, GLOBAL_DMA_HEAP_FLAG_ALIASES)
+    ) {
+      return undefined;
+    }
+    if (extractBooleanFlag(item, GLOBAL_DMA_HEAP_FLAG_ALIASES)) {
       return {};
     }
     return undefined;

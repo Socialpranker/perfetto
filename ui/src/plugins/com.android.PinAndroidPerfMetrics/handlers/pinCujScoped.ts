@@ -13,10 +13,21 @@
 // limitations under the License.
 
 import {
+  CUJ_FIELD_ALIASES,
   expandProcessName,
+  extractCujName,
+  extractIsWeighted,
+  extractJankType,
+  extractProcess,
+  IS_WEIGHTED_FIELD_ALIASES,
+  JANK_CUJ_QUERY_PRECONDITIONS,
+  JANK_TYPE_FIELD_ALIASES,
+  isValidDictionaryRequest,
+  PinIntentKind,
+  PROCESS_FIELD_ALIASES,
   type CujScopedMetricData,
-  type MetricHandler,
   type JankType,
+  type MetricHandler,
 } from './metricUtils';
 import {NUM} from '../../../trace_processor/query_result';
 import type {Trace} from '../../../public/trace';
@@ -28,7 +39,9 @@ import {addDebugSliceTrack} from '../../../components/tracks/debug_tracks';
 
 const ENABLE_FOCUS_ON_FIRST_JANK = true;
 
-class PinCujScopedJank implements MetricHandler {
+class PinCujScopedJank implements MetricHandler<CujScopedMetricData> {
+  public readonly kind = PinIntentKind.CujScopedJank;
+
   /**
    * Matches metric key & return parsed data if successful.
    *
@@ -50,6 +63,29 @@ class PinCujScopedJank implements MetricHandler {
     };
   }
 
+  public parseRequest(
+    item: Record<string, string>,
+  ): CujScopedMetricData | undefined {
+    if (
+      !isValidDictionaryRequest(item, this.kind, [
+        ...PROCESS_FIELD_ALIASES,
+        ...CUJ_FIELD_ALIASES,
+        ...JANK_TYPE_FIELD_ALIASES,
+        ...IS_WEIGHTED_FIELD_ALIASES,
+      ])
+    ) {
+      return undefined;
+    }
+    const process = extractProcess(item);
+    const cujName = extractCujName(item);
+    if (process === undefined || cujName === undefined || cujName === '*') {
+      return undefined;
+    }
+    const jankType = extractJankType(item) ?? 'frames';
+    const isWeighted = extractIsWeighted(item) ?? false;
+    return {process, cujName, jankType, isWeighted};
+  }
+
   /**
    * Adds the debug tracks for cuj Scoped jank metrics.
    *
@@ -58,6 +94,7 @@ class PinCujScopedJank implements MetricHandler {
    * @returns {void} Adds one track for Jank CUJ slice and one for Janky CUJ frames
    */
   public async addMetricTrack(metricData: CujScopedMetricData, ctx: Trace) {
+    await ctx.engine.query(JANK_CUJ_QUERY_PRECONDITIONS);
     // TODO: b/349502258 - Refactor to single API
     const {tableName, ...config} = await this.cujScopedTrackConfig(
       metricData,

@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {PinIntentKind} from './metricUtils';
 import {SimpleProcessMetricHandler} from './simpleProcessMetricHandler';
 
-export const pinHeapSizeMetricsInstance = new SimpleProcessMetricHandler(
-  [
+export const pinHeapSizeMetricsInstance = new SimpleProcessMetricHandler({
+  kind: PinIntentKind.HeapSize,
+  matchers: [
     /perfetto_android_mem-(?<processName>.*)-total_counters-java_heap-(.*)/,
     /^perfetto_java_heap_class_stats-instance_stats-name-(?<processName>.*?)-samples-type_count-type_name/,
   ],
-  ['Heap size', 'mem.rss.anon', 'ART allocation profile'],
-);
+  trackPrefixMatchers: ['Heap size', 'mem.rss.anon', 'ART allocation profile'],
+  dictionaryKeyAliases: ['heapSize', 'heap_size'],
+});

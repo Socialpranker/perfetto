@@ -16,25 +16,46 @@ import {NUM} from '../../../trace_processor/query_result';
 import type {Trace} from '../../../public/trace';
 import {
   expandProcessName,
+  extractBooleanFlag,
+  extractProcess,
+  extractProp,
+  isValidDictionaryRequest,
+  MEMORY_TYPE_FIELD_ALIASES,
+  PROCESS_FIELD_ALIASES,
   type MetricHandler,
+  type PinIntentKind,
   type ProcessMetricData,
 } from './metricUtils';
 
-export class SimpleProcessMetricHandler implements MetricHandler {
+export interface SimpleProcessMetricHandlerArgs {
+  readonly kind: PinIntentKind;
+  readonly matchers: RegExp[];
+  readonly trackPrefixMatchers: string[];
+  readonly trackRegexpMatchers?: RegExp[];
+  readonly dictionaryKeyAliases?: string[];
+}
+
+export class SimpleProcessMetricHandler implements MetricHandler<ProcessMetricData> {
+  public readonly kind: PinIntentKind;
+  private readonly matchers: RegExp[];
+  private readonly trackPrefixMatchers: string[];
+  private readonly trackRegexpMatchers: RegExp[];
+  private readonly dictionaryKeyAliases: string[];
+
   /**
    * Base class for simple logic track pinning
    * Use when you have a Regexp which can extract a process name from an url
    * And pin tracks in the found process
    *
-   * @param {RegExp[]} matchers List of matchers for metric keys
-   * @param {string[]} trackPrefixMatchers Matches track in the process based on prefix
-   * @param {RegExp[]} trackRegexpMatchers Matches track in the process based on RegExp
+   * @param {SimpleProcessMetricHandlerArgs} args Named arguments for handler configuration
    */
-  constructor(
-    private readonly matchers: RegExp[],
-    private readonly trackPrefixMatchers: string[],
-    private readonly trackRegexpMatchers: RegExp[] = [],
-  ) {}
+  constructor(args: SimpleProcessMetricHandlerArgs) {
+    this.kind = args.kind;
+    this.matchers = args.matchers;
+    this.trackPrefixMatchers = args.trackPrefixMatchers;
+    this.trackRegexpMatchers = args.trackRegexpMatchers ?? [];
+    this.dictionaryKeyAliases = args.dictionaryKeyAliases ?? [];
+  }
 
   /**
    * Matches metric key & return parsed data if successful.
@@ -50,6 +71,34 @@ export class SimpleProcessMetricHandler implements MetricHandler {
           process: expandProcessName(match.groups.processName),
         };
       }
+    }
+    return undefined;
+  }
+
+  public parseRequest(
+    item: Record<string, string>,
+  ): ProcessMetricData | undefined {
+    if (
+      !isValidDictionaryRequest(item, this.kind, [
+        ...PROCESS_FIELD_ALIASES,
+        ...MEMORY_TYPE_FIELD_ALIASES,
+        ...this.dictionaryKeyAliases,
+      ])
+    ) {
+      return undefined;
+    }
+    const process = extractProcess(item);
+    if (process === undefined) {
+      return undefined;
+    }
+    const memType = extractProp(item, MEMORY_TYPE_FIELD_ALIASES);
+    const matchesTypeOrKind =
+      item.kind === this.kind ||
+      item.type === this.kind ||
+      (memType !== undefined && this.dictionaryKeyAliases.includes(memType)) ||
+      extractBooleanFlag(item, this.dictionaryKeyAliases);
+    if (matchesTypeOrKind) {
+      return {process};
     }
     return undefined;
   }
