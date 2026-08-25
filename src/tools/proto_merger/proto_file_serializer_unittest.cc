@@ -767,6 +767,92 @@ TEST(ProtoFileSerializerTest, EndToEndReservedFieldMerge) {
   EXPECT_THAT(out, HasSubstr("not present upstream"));
 }
 
+TEST(ProtoFileSerializerTest,
+     ReservedUpstreamFieldWithDeletedTypeIsPlacedInDeletedFields) {
+  struct ScopedUnlink {
+    std::string path;
+    ~ScopedUnlink() { base::Unlink(path.c_str()); }
+  };
+
+  base::TempDir temp_dir = base::TempDir::Create();
+  std::string input_path = temp_dir.path() + "/input.proto";
+  std::string upstream_path = temp_dir.path() + "/upstream.proto";
+
+  ScopedUnlink unlink_input{input_path};
+  ScopedUnlink unlink_upstream{upstream_path};
+
+  std::string input_content = R"(
+    syntax = "proto2";
+    package perfetto.protos;
+
+    message Container {
+      message Note {
+        optional string key = 1;
+        optional string value = 2;
+      }
+      repeated Note notes = 46;
+    }
+  )";
+
+  std::string upstream_content = R"(
+    syntax = "proto2";
+    package perfetto.protos;
+
+    message Container {
+      reserved 46;
+    }
+  )";
+
+  {
+    base::ScopedFile file(base::OpenFile(input_path, O_CREAT | O_WRONLY, 0600));
+    ASSERT_TRUE(file);
+    ASSERT_TRUE(
+        base::WriteAll(*file, input_content.c_str(), input_content.size()));
+  }
+  {
+    base::ScopedFile file(
+        base::OpenFile(upstream_path, O_CREAT | O_WRONLY, 0600));
+    ASSERT_TRUE(file);
+    ASSERT_TRUE(base::WriteAll(*file, upstream_content.c_str(),
+                               upstream_content.size()));
+  }
+
+  protozero::MultiFileErrorCollectorImpl mfe;
+  google::protobuf::compiler::DiskSourceTree dst;
+  dst.MapPath("", temp_dir.path());
+  dst.MapPath("", ".");
+  dst.MapPath("", "buildtools/protobuf/src");
+
+  google::protobuf::compiler::Importer importer_input(&dst, &mfe);
+  const auto* input_desc = importer_input.Import("input.proto");
+
+  google::protobuf::compiler::Importer importer_upstream(&dst, &mfe);
+  const auto* upstream_desc = importer_upstream.Import("upstream.proto");
+
+  ASSERT_NE(input_desc, nullptr);
+  ASSERT_NE(upstream_desc, nullptr);
+
+  ProtoFile input_file = ProtoFileFromDescriptor("", *input_desc);
+  ProtoFile upstream_file = ProtoFileFromDescriptor("", *upstream_desc);
+
+  ProtoFile merged;
+  ASSERT_TRUE(
+      MergeProtoFiles(input_file, upstream_file, Allowlist{}, merged).ok());
+
+  std::string out = ProtoFileToDotProto(merged);
+
+  size_t pos_note_msg = out.find("message Note {");
+  size_t pos_notes_field = out.find("repeated Note notes = 46");
+
+  EXPECT_NE(pos_note_msg, std::string::npos);
+  EXPECT_NE(pos_notes_field, std::string::npos);
+  EXPECT_LT(pos_note_msg, pos_notes_field)
+      << "message Note must be defined before repeated Note notes is used:\n"
+      << out;
+
+  EXPECT_THAT(out, HasSubstr("repeated Note notes = 46 [deprecated = true];"));
+}
+
 }  // namespace
 }  // namespace proto_merger
 }  // namespace perfetto
