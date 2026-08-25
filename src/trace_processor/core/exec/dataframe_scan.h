@@ -41,9 +41,11 @@ namespace perfetto::trace_processor::core::exec {
 // execution, so a relation can be free for most of its columns and pay a
 // bounded amount for the rest. Nothing is materialised ahead of being asked
 // for, so a query which reads one batch and stops does one batch of work.
+//
+// The dataframe must be finalized and must outlive the scan.
 class DataframeScan : public Source {
  public:
-  DataframeScan(const dataframe::Dataframe*, std::vector<uint32_t> columns);
+  DataframeScan(const dataframe::Dataframe&, std::vector<uint32_t> columns);
   ~DataframeScan() override;
 
   std::unique_ptr<OperatorState> MakeState() const override;

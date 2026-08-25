@@ -19,8 +19,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "perfetto/base/logging.h"
 
 #include "src/trace_processor/containers/string_pool.h"
 #include "src/trace_processor/core/common/storage_types.h"
@@ -70,7 +73,14 @@ class ExpanderImpl final : public DataframeScan::Expander {
     buffer_->validity.ClearAllBits();
     for (uint32_t row = 0; row < count; ++row) {
       if (bits_->is_set(from + row)) {
-        buffer_->values[row] = packed_[consumed_++];
+        if constexpr (std::is_same_v<T, uint32_t>) {
+          buffer_->values[row] =
+              packed_ ? packed_[consumed_] : static_cast<uint32_t>(consumed_);
+        } else {
+          PERFETTO_DCHECK(packed_);
+          buffer_->values[row] = packed_[consumed_];
+        }
+        ++consumed_;
         buffer_->validity.set(row);
       } else {
         // Written even for a null row, so the storage is readable everywhere.
@@ -134,9 +144,11 @@ void BuildColumn(const dataframe::Column& column,
 
 }  // namespace
 
-DataframeScan::DataframeScan(const dataframe::Dataframe* dataframe,
+DataframeScan::DataframeScan(const dataframe::Dataframe& dataframe,
                              std::vector<uint32_t> columns)
-    : dataframe_(dataframe), columns_(std::move(columns)) {}
+    : dataframe_(&dataframe), columns_(std::move(columns)) {
+  PERFETTO_CHECK(dataframe.finalized());
+}
 
 DataframeScan::~DataframeScan() = default;
 DataframeScan::State::~State() = default;
@@ -150,8 +162,18 @@ std::unique_ptr<OperatorState> DataframeScan::MakeState() const {
     uint32_t index = columns_[i];
     StorageType type = dataframe_->column_type(index);
     if (type.Is<Id>()) {
-      // No storage at all: the value is the row it sits at.
-      state->columns[i] = ColumnView::Reference(type, nullptr, nullptr);
+      const auto& nulls = dataframe_->column(index).null_storage;
+      if (nulls.nullability().Is<NonNull>()) {
+        state->columns[i] = ColumnView::Reference(type, nullptr, nullptr);
+      } else if (nulls.nullability().Is<DenseNull>()) {
+        state->columns[i] =
+            ColumnView::Reference(type, nullptr, &nulls.GetNullBitVector());
+      } else {
+        auto impl = std::make_unique<ExpanderImpl<uint32_t>>(
+            StorageType{Uint32{}}, nullptr, &nulls.GetNullBitVector());
+        state->owners[i] = impl->owner();
+        state->expanders[i] = std::move(impl);
+      }
       continue;
     }
     const dataframe::Column& column = dataframe_->column(index);
