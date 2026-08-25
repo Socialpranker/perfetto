@@ -32,23 +32,25 @@
 
 namespace perfetto::trace_processor::core::exec {
 
+using AssertTypeTarget = TypeSet<Int64, Double, String>;
+
 // Converts a column whose values carry their own type into a column of a
 // single type, failing on any row which disagrees.
 //
 // A source reading SQLite cannot promise a column's type, because a declared
-// type in SQLite is not binding: an INTEGER column holds text if something
-// puts text in it. So anything downstream which needs a typed column has to
-// come through here. An integer widens to a float where the conversion is
-// exact; nothing else converts.
+// type in SQLite is not binding. AssertType is needed for variant columns;
+// already-proven flat columns pass through unchanged. Integers widen to a
+// float where the conversion is exact; nothing else converts.
 class AssertType : public Operator {
  public:
-  AssertType(uint32_t column, StorageType type, std::string name);
+  AssertType(uint32_t column, AssertTypeTarget type, std::string name);
   ~AssertType() override;
 
   std::unique_ptr<OperatorState> MakeState() const override;
   OpResult Execute(const RowBatch& in,
                    RowBatch& out,
                    OperatorState&) const override;
+  void Rewind(OperatorState&) const override;
   base::Status status(const OperatorState&) const override;
 
  private:
@@ -64,7 +66,7 @@ class AssertType : public Operator {
     base::Status status = base::OkStatus();
   };
 
-  void Widen(const ColumnView&, uint32_t count, Values&) const;
+  bool Widen(const ColumnView&, uint32_t count, State&) const;
 
   uint32_t column_;
   StorageType type_;

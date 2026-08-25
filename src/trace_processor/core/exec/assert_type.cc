@@ -50,7 +50,8 @@ const char* Name(Variant::Type type) {
 }
 
 const char* Name(StorageType type) {
-  if (type.Is<Int64>()) {
+  if (type.Is<Id>() || type.Is<Uint32>() || type.Is<Int32>() ||
+      type.Is<Int64>()) {
     return "an integer";
   }
   return type.Is<Double>() ? "a float" : "a string";
@@ -68,42 +69,82 @@ bool Walk(Resolve resolve, uint32_t count, Write write) {
   return true;
 }
 
-// Reads `count` values of a narrower integer column into `values.ints`.
-template <typename T>
+template <typename From, typename To>
 void WidenAs(const ColumnView& column,
              uint32_t count,
-             FlexVector<int64_t>& out) {
-  const auto* data = static_cast<const T*>(column.data());
-  RowSelection selection = column.selection();
-  int64_t* dest = out.data();
-  if (selection.is_range()) {
-    const T* from = data + selection.offset();
-    for (uint32_t i = 0; i < count; ++i) {
-      dest[i] = from[i];
+             FlexVector<To>& out,
+             BitVector& out_validity) {
+  const BitVector* validity = column.validity();
+  out_validity.ClearAllBits();
+  for (uint32_t row = 0; row < count; ++row) {
+    uint32_t index = column.selection().GetIndex(row);
+    if (validity && !validity->is_set(index)) {
+      out[row] = To{};
+      continue;
     }
-    return;
+    out[row] = static_cast<To>(column.Value<From>(row));
+    out_validity.set(row);
   }
-  const uint32_t* rows = selection.data();
-  for (uint32_t i = 0; i < count; ++i) {
-    dest[i] = data[rows[i]];
+}
+
+bool ExactDouble(int64_t value, double* out) {
+  constexpr double kInt64Limit = 0x1p63;
+  double widened = static_cast<double>(value);
+  if (widened >= kInt64Limit || widened < -kInt64Limit ||
+      static_cast<int64_t>(widened) != value) {
+    return false;
   }
+  *out = widened;
+  return true;
 }
 
 }  // namespace
 
-AssertType::AssertType(uint32_t column, StorageType type, std::string name)
-    : column_(column), type_(type), name_(std::move(name)) {}
+AssertType::AssertType(uint32_t column, AssertTypeTarget type, std::string name)
+    : column_(column),
+      type_(type.Upcast<StorageType>()),
+      name_(std::move(name)) {}
 
 AssertType::~AssertType() = default;
 
-void AssertType::Widen(const ColumnView& column,
+bool AssertType::Widen(const ColumnView& column,
                        uint32_t count,
-                       Values& values) const {
-  if (column.type().Is<Uint32>()) {
-    WidenAs<uint32_t>(column, count, values.ints);
-  } else {
-    WidenAs<int32_t>(column, count, values.ints);
+                       State& state) const {
+  Values& values = *state.values;
+  if (type_.Is<Int64>()) {
+    if (column.type().Is<Id>() || column.type().Is<Uint32>()) {
+      WidenAs<uint32_t>(column, count, values.ints, values.validity);
+    } else {
+      WidenAs<int32_t>(column, count, values.ints, values.validity);
+    }
+    return true;
   }
+  if (column.type().Is<Id>() || column.type().Is<Uint32>()) {
+    WidenAs<uint32_t>(column, count, values.doubles, values.validity);
+    return true;
+  }
+  if (column.type().Is<Int32>()) {
+    WidenAs<int32_t>(column, count, values.doubles, values.validity);
+    return true;
+  }
+
+  const BitVector* validity = column.validity();
+  values.validity.ClearAllBits();
+  for (uint32_t row = 0; row < count; ++row) {
+    uint32_t index = column.selection().GetIndex(row);
+    if (validity && !validity->is_set(index)) {
+      values.doubles[row] = 0;
+      continue;
+    }
+    if (!ExactDouble(column.Value<int64_t>(row), &values.doubles[row])) {
+      state.status = base::ErrStatus(
+          "column '%s' holds an integer too large to be a float",
+          name_.c_str());
+      return false;
+    }
+    values.validity.set(row);
+  }
+  return true;
 }
 AssertType::State::~State() = default;
 
@@ -124,6 +165,10 @@ base::Status AssertType::status(const OperatorState& state) const {
   return state.Cast<const State>().status;
 }
 
+void AssertType::Rewind(OperatorState& state) const {
+  state.Cast<State>().status = base::OkStatus();
+}
+
 OpResult AssertType::Execute(const RowBatch& in,
                              RowBatch& out,
                              OperatorState& state) const {
@@ -134,13 +179,20 @@ OpResult AssertType::Execute(const RowBatch& in,
     if (column.type() == type_) {
       return OpResult::kNeedMoreInput;
     }
-    // Widening a narrower integer to Int64 always loses nothing.
-    if (type_.Is<Int64>() &&
-        (column.type().Is<Uint32>() || column.type().Is<Int32>())) {
-      Widen(column, in.size(), *s.values);
+    bool integer = column.type().Is<Id>() || column.type().Is<Uint32>() ||
+                   column.type().Is<Int32>() || column.type().Is<Int64>();
+    bool widen = integer && (type_.Is<Double>() ||
+                             (type_.Is<Int64>() && !column.type().Is<Int64>()));
+    if (widen) {
+      if (!Widen(column, in.size(), s)) {
+        return OpResult::kError;
+      }
+      const void* data =
+          type_.Is<Int64>()
+              ? static_cast<const void*>(s.values->ints.data())
+              : static_cast<const void*>(s.values->doubles.data());
       out.SetColumn(column_,
-                    ColumnView::Reference(type_, s.values->ints.data(),
-                                          column.validity()),
+                    ColumnView::Reference(type_, data, &s.values->validity),
                     s.values);
       return OpResult::kNeedMoreInput;
     }
@@ -171,16 +223,12 @@ OpResult AssertType::Execute(const RowBatch& in,
     } else if (type_.Is<Double>() && cell.type == Variant::Type::kDouble) {
       values.doubles[row] = cell.AsDouble();
     } else if (type_.Is<Double>() && cell.type == Variant::Type::kInt64) {
-      // Only convert where the widening is exact.
-      int64_t value = cell.AsInt64();
-      auto widened = static_cast<double>(value);
-      if (static_cast<int64_t>(widened) != value) {
+      if (!ExactDouble(cell.AsInt64(), &values.doubles[row])) {
         s.status = base::ErrStatus(
             "column '%s' holds an integer too large to be a float",
             name_.c_str());
         return false;
       }
-      values.doubles[row] = widened;
     } else if (type_.Is<String>() && cell.type == Variant::Type::kString) {
       values.strings[row] = cell.AsString();
     } else {

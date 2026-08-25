@@ -17,6 +17,7 @@
 #include "src/trace_processor/core/exec/assert_type.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -26,17 +27,20 @@
 #include "src/trace_processor/core/exec/operator.h"
 #include "src/trace_processor/core/exec/row_batch.h"
 #include "src/trace_processor/core/exec/row_selection.h"
+#include "src/trace_processor/core/exec/test_utils.h"
 #include "src/trace_processor/core/exec/variant.h"
 #include "test/gtest_and_gmock.h"
 
 namespace perfetto::trace_processor::core::exec {
 namespace {
+using testing::Eq;
+using testing::Optional;
 
 using testing::ElementsAre;
 
 // Runs the operator over a single batch of variants.
 struct Asserted {
-  Asserted(std::vector<Variant> cells, StorageType type)
+  Asserted(std::vector<Variant> cells, AssertTypeTarget type)
       : op(0, type, "a"), state(op.MakeState()), values(std::move(cells)) {
     batch.AddColumn(ColumnView::Variants(values.data()));
     batch.Compose(RowSelection::Range(0), static_cast<uint32_t>(values.size()));
@@ -48,13 +52,7 @@ struct Asserted {
 
   template <typename T>
   std::vector<T> Read() {
-    const ColumnView& column = out.column(0);
-    const auto* data = static_cast<const T*>(column.data());
-    std::vector<T> read;
-    for (uint32_t i = 0; i < out.size(); ++i) {
-      read.push_back(data[column.selection().GetIndex(i)]);
-    }
-    return read;
+    return test::ReadColumn<T>(out, 0);
   }
 
   AssertType op;
@@ -65,7 +63,8 @@ struct Asserted {
 };
 
 TEST(AssertTypeTest, TurnsVariantsIntoAFlatColumn) {
-  Asserted run({Variant::Int64(7), Variant::Int64(8)}, StorageType{Int64{}});
+  Asserted run({Variant::Int64(7), Variant::Int64(8)},
+               AssertTypeTarget{Int64{}});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
 
   EXPECT_EQ(run.out.column(0).kind(), ColumnView::Kind::kFlat);
@@ -75,7 +74,7 @@ TEST(AssertTypeTest, TurnsVariantsIntoAFlatColumn) {
 
 TEST(AssertTypeTest, ANullIsARowWhichHoldsNothing) {
   Asserted run({Variant::Int64(7), Variant::Null(), Variant::Int64(9)},
-               StorageType{Int64{}});
+               AssertTypeTarget{Int64{}});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
 
   const BitVector* validity = run.out.column(0).validity();
@@ -88,7 +87,7 @@ TEST(AssertTypeTest, ANullIsARowWhichHoldsNothing) {
 TEST(AssertTypeTest, ARowWhichDisagreesIsReported) {
   StringPool pool;
   Asserted run({Variant::Int64(7), Variant::String(pool.InternString("no"))},
-               StorageType{Int64{}});
+               AssertTypeTarget{Int64{}});
   EXPECT_EQ(run.Execute(), OpResult::kError);
   EXPECT_FALSE(run.status().ok());
   EXPECT_THAT(run.status().message(), testing::HasSubstr("'a'"));
@@ -97,13 +96,14 @@ TEST(AssertTypeTest, ARowWhichDisagreesIsReported) {
 
 TEST(AssertTypeTest, AnIntegerWidensToAFloat) {
   Asserted run({Variant::Int64(7), Variant::Double(1.5)},
-               StorageType{Double{}});
+               AssertTypeTarget{Double{}});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
   EXPECT_THAT(run.Read<double>(), ElementsAre(7.0, 1.5));
 }
 
 TEST(AssertTypeTest, AnIntegerTooLargeToWidenIsReported) {
-  Asserted run({Variant::Int64((int64_t{1} << 53) + 1)}, StorageType{Double{}});
+  Asserted run({Variant::Int64(std::numeric_limits<int64_t>::max())},
+               AssertTypeTarget{Double{}});
   EXPECT_EQ(run.Execute(), OpResult::kError);
   EXPECT_THAT(run.status().message(), testing::HasSubstr("too large"));
 }
@@ -111,7 +111,7 @@ TEST(AssertTypeTest, AnIntegerTooLargeToWidenIsReported) {
 TEST(AssertTypeTest, KeepsStrings) {
   StringPool pool;
   Asserted run({Variant::String(pool.InternString("hi"))},
-               StorageType{String{}});
+               AssertTypeTarget{String{}});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
   EXPECT_EQ(pool.Get(run.Read<StringPool::Id>()[0]).ToStdString(), "hi");
 }
@@ -120,7 +120,7 @@ TEST(AssertTypeTest, KeepsStrings) {
 // narrowed by an earlier operator looks like.
 TEST(AssertTypeTest, FollowsTheRowsTheBatchPicksOut) {
   Asserted run({Variant::Int64(10), Variant::Int64(11), Variant::Int64(12)},
-               StorageType{Int64{}});
+               AssertTypeTarget{Int64{}});
   std::vector<uint32_t> rows = {2, 0};
   run.batch.mutable_column(0).SetBorrowedRows(
       Span<const uint32_t>(rows.data(), rows.data() + 2));
@@ -133,7 +133,7 @@ TEST(AssertTypeTest, FollowsTheRowsTheBatchPicksOut) {
 // A column which is already the right type is left alone.
 TEST(AssertTypeTest, AFlatColumnOfTheRightTypePassesThrough) {
   std::vector<int64_t> values = {1, 2};
-  AssertType op(0, StorageType{Int64{}}, "a");
+  AssertType op(0, AssertTypeTarget{Int64{}}, "a");
   std::unique_ptr<OperatorState> state = op.MakeState();
   RowBatch batch;
   batch.AddColumn(ColumnView::Reference(StorageType{Int64{}}, values.data()));
@@ -147,7 +147,7 @@ TEST(AssertTypeTest, AFlatColumnOfTheRightTypePassesThrough) {
 
 TEST(AssertTypeTest, AFlatColumnOfTheWrongTypeIsReported) {
   std::vector<double> values = {1.5};
-  AssertType op(0, StorageType{Int64{}}, "a");
+  AssertType op(0, AssertTypeTarget{Int64{}}, "a");
   std::unique_ptr<OperatorState> state = op.MakeState();
   RowBatch batch;
   batch.AddColumn(ColumnView::Reference(StorageType{Double{}}, values.data()));
@@ -159,23 +159,72 @@ TEST(AssertTypeTest, AFlatColumnOfTheWrongTypeIsReported) {
   EXPECT_FALSE(op.status(*state).ok());
 }
 
-// A dataframe's id column is narrower than an integer, so widening it is
-// exact.
-TEST(AssertTypeTest, ANarrowerIntegerWidens) {
+TEST(AssertTypeTest, WideningASelectedFlatColumnRemapsValidity) {
   std::vector<uint32_t> values = {7, 8, 9};
-  AssertType op(0, StorageType{Int64{}}, "a");
+  BitVector validity = BitVector::CreateWithSize(3);
+  validity.set(1);
+  AssertType op(0, AssertTypeTarget{Int64{}}, "a");
   std::unique_ptr<OperatorState> state = op.MakeState();
   RowBatch batch;
-  batch.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, values.data()));
+  batch.AddColumn(
+      ColumnView::Reference(StorageType{Uint32{}}, values.data(), &validity));
   batch.Compose(RowSelection::Range(1), 2);
   batch.SetCardinality(2);
 
   RowBatch out;
   ASSERT_EQ(op.Execute(batch, out, *state), OpResult::kNeedMoreInput);
-  ASSERT_TRUE(out.column(0).type().Is<Int64>());
-  const auto* data = static_cast<const int64_t*>(out.column(0).data());
-  EXPECT_EQ(data[0], 8);
-  EXPECT_EQ(data[1], 9);
+  EXPECT_THAT(test::ReadNullableColumn<int64_t>(out, 0),
+              ElementsAre(Optional(8), Eq(std::nullopt)));
+  EXPECT_THAT(test::ReadColumn<int64_t>(out, 0), ElementsAre(8, 0));
+}
+
+TEST(AssertTypeTest, FlatIntegersWidenToDouble) {
+  std::vector<int64_t> values = {std::numeric_limits<int64_t>::min(), 42};
+  AssertType op(0, AssertTypeTarget{Double{}}, "a");
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  RowBatch batch;
+  batch.AddColumn(ColumnView::Reference(StorageType{Int64{}}, values.data()));
+  batch.SetCardinality(2);
+
+  RowBatch out;
+  ASSERT_EQ(op.Execute(batch, out, *state), OpResult::kNeedMoreInput);
+  EXPECT_THAT(test::ReadColumn<double>(out, 0),
+              ElementsAre(static_cast<double>(values[0]), 42.0));
+}
+
+TEST(AssertTypeTest, RewindClearsATypeError) {
+  StringPool pool;
+  Asserted run({Variant::String(pool.InternString("wrong"))},
+               AssertTypeTarget{Int64{}});
+  ASSERT_EQ(run.Execute(), OpResult::kError);
+  ASSERT_FALSE(run.status().ok());
+  run.op.Rewind(*run.state);
+  EXPECT_TRUE(run.status().ok());
+}
+
+TEST(AssertTypeTest, AReusedNullSlotIsCleared) {
+  Asserted run({Variant::Int64(7)}, AssertTypeTarget{Int64{}});
+  ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
+  EXPECT_THAT(run.Read<int64_t>(), ElementsAre(7));
+
+  run.values[0] = Variant::Null();
+  ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
+  EXPECT_THAT(run.Read<int64_t>(), ElementsAre(0));
+  EXPECT_FALSE(run.out.column(0).validity()->is_set(0));
+}
+
+TEST(AssertTypeTest, NarrowIntegerErrorsNameAnInteger) {
+  std::vector<uint32_t> values = {7};
+  AssertType op(0, AssertTypeTarget{String{}}, "a");
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  RowBatch batch;
+  batch.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, values.data()));
+  batch.SetCardinality(1);
+
+  RowBatch out;
+  ASSERT_EQ(op.Execute(batch, out, *state), OpResult::kError);
+  EXPECT_THAT(op.status(*state).message(), testing::HasSubstr("an integer"));
+  EXPECT_THAT(op.status(*state).message(), testing::HasSubstr("a string"));
 }
 
 }  // namespace
