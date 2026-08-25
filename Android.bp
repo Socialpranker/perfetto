@@ -17675,6 +17675,11 @@ filegroup {
     ],
 }
 
+// GN: //src/trace_processor/core/exec:test_utils
+filegroup {
+    name: "perfetto_src_trace_processor_core_exec_test_utils",
+}
+
 // GN: //src/trace_processor/core/exec:unittests
 filegroup {
     name: "perfetto_src_trace_processor_core_exec_unittests",
@@ -24049,6 +24054,7 @@ cc_test {
         ":perfetto_src_trace_processor_core_dataframe_dataframe",
         ":perfetto_src_trace_processor_core_dataframe_unittests",
         ":perfetto_src_trace_processor_core_exec_exec",
+        ":perfetto_src_trace_processor_core_exec_test_utils",
         ":perfetto_src_trace_processor_core_exec_unittests",
         ":perfetto_src_trace_processor_core_interpreter_bytecode_interpreter_test_utils",
         ":perfetto_src_trace_processor_core_interpreter_interpreter",
