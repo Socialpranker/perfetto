@@ -30,6 +30,7 @@
 #include "src/trace_processor/core/exec/pipeline.h"
 #include "src/trace_processor/core/exec/row_batch.h"
 #include "src/trace_processor/core/exec/row_selection.h"
+#include "src/trace_processor/core/exec/test_utils.h"
 #include "src/trace_processor/core/exec/tree_number_nodes.h"
 #include "src/trace_processor/core/util/bit_vector.h"
 #include "test/gtest_and_gmock.h"
@@ -52,6 +53,8 @@ class RowSource final : public Source {
  public:
   RowSource(std::vector<Row> rows, uint32_t chunk_rows)
       : rows_(std::move(rows)), chunk_rows_(chunk_rows) {}
+
+  void SetRows(std::vector<Row> rows) { rows_ = std::move(rows); }
 
   std::unique_ptr<OperatorState> MakeState() const override {
     return std::make_unique<State>();
@@ -108,6 +111,47 @@ class RowSource final : public Source {
 
 RowSource::State::~State() = default;
 
+class NumberedSource final : public Source {
+ public:
+  NumberedSource(std::vector<uint32_t> nodes,
+                 std::vector<uint32_t> parents,
+                 std::vector<int64_t> payloads)
+      : nodes_(std::move(nodes)),
+        parents_(std::move(parents)),
+        payloads_(std::move(payloads)) {}
+
+  std::unique_ptr<OperatorState> MakeState() const override {
+    return std::make_unique<State>();
+  }
+  void Rewind(OperatorState& state) const override {
+    state.Cast<State>().emitted = false;
+  }
+  bool GetData(RowBatch& out, OperatorState& state) const override {
+    State& s = state.Cast<State>();
+    if (s.emitted) {
+      return false;
+    }
+    out.Reset();
+    out.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, nodes_.data()));
+    out.AddColumn(
+        ColumnView::Reference(StorageType{Uint32{}}, parents_.data()));
+    out.AddColumn(
+        ColumnView::Reference(StorageType{Int64{}}, payloads_.data()));
+    out.SetCardinality(static_cast<uint32_t>(nodes_.size()));
+    s.emitted = true;
+    return true;
+  }
+
+ private:
+  struct State : OperatorState {
+    bool emitted = false;
+  };
+
+  std::vector<uint32_t> nodes_;
+  std::vector<uint32_t> parents_;
+  std::vector<int64_t> payloads_;
+};
+
 // Drives a plan the way an executor does: it creates the state and owns the
 // batch, leaving the plan const.
 class Execution {
@@ -119,6 +163,7 @@ class Execution {
     return source_.GetData(batch_, *state_) ? &batch_ : nullptr;
   }
   base::Status status() const { return source_.status(*state_); }
+  void Rewind() { source_.Rewind(*state_); }
 
  private:
   const Source& source_;
@@ -137,27 +182,19 @@ struct Output {
   base::Status status = base::OkStatus();
 };
 
-int64_t Read(const RowBatch& batch, uint32_t column, uint32_t row) {
-  const ColumnView& view = batch.column(column);
-  return static_cast<const int64_t*>(
-      view.data())[view.selection().GetIndex(row)];
-}
-
-// The node number columns TreeNumberNodes appends.
-int64_t ReadNode(const RowBatch& batch, uint32_t column, uint32_t row) {
-  const ColumnView& view = batch.column(column);
-  auto value =
-      static_cast<const uint32_t*>(view.data())[view.selection().GetIndex(row)];
-  return value == kNoNode ? -1 : static_cast<int64_t>(value);
-}
-
 Output Drain(const TreeOrder&, Execution* run) {
   Output out;
   while (RowBatch* batch = run->Next()) {
-    for (uint32_t row = 0; row < batch->size(); ++row) {
-      out.payload.push_back(Read(*batch, 2, row));
-      out.node.push_back(ReadNode(*batch, 3, row));
-      out.parent.push_back(ReadNode(*batch, 4, row));
+    std::vector<int64_t> payload = test::ReadColumn<int64_t>(*batch, 2);
+    std::vector<uint32_t> nodes = test::ReadColumn<uint32_t>(*batch, 3);
+    std::vector<uint32_t> parents = test::ReadColumn<uint32_t>(*batch, 4);
+    out.payload.insert(out.payload.end(), payload.begin(), payload.end());
+    for (uint32_t node : nodes) {
+      out.node.push_back(node == kNoNode ? -1 : static_cast<int64_t>(node));
+    }
+    for (uint32_t parent : parents) {
+      out.parent.push_back(parent == kNoNode ? -1
+                                             : static_cast<int64_t>(parent));
     }
   }
   out.status = run->status();
@@ -362,6 +399,64 @@ TEST(TreeOrderTest, ACycleIsReported) {
   Output out = Drain(order);
   EXPECT_FALSE(out.status.ok());
   EXPECT_THAT(out.status.message(), testing::HasSubstr("cycle"));
+}
+
+TEST(TreeOrderTest, ASelfParentIsReportedInStreamingMode) {
+  std::vector<Row> rows = {{0, 0, 100}};
+  RowSource source(rows, 1);
+  std::vector<std::unique_ptr<Operator>> numbering;
+  numbering.push_back(std::make_unique<TreeNumberNodes>(0, 1));
+  Pipeline numbered(source, std::move(numbering));
+  TreeChildFirst order(numbered, 3, 4, TreeRowOrder::kChildFirst);
+
+  Output out = Drain(order);
+  EXPECT_FALSE(out.status.ok());
+  EXPECT_THAT(out.status.message(), testing::HasSubstr("own parent"));
+}
+
+TEST(TreeOrderTest, DuplicateNumberedNodesAreReported) {
+  NumberedSource source({0, 1, 0}, {1, kNoNode, 1}, {100, 101, 102});
+  TreeParentFirst order(source, 0, 1);
+  Execution run(order);
+  while (run.Next()) {
+  }
+  EXPECT_FALSE(run.status().ok());
+  EXPECT_THAT(run.status().message(), testing::HasSubstr("same node"));
+}
+
+TEST(TreeOrderTest, BufferedRewindReadsTheInputAgain) {
+  RowSource source(ParentFirstRows(), 2);
+  std::vector<std::unique_ptr<Operator>> numbering;
+  numbering.push_back(std::make_unique<TreeNumberNodes>(0, 1));
+  Pipeline numbered(source, std::move(numbering));
+  TreeParentFirst order(numbered, 3, 4);
+  Execution run(order);
+  Output first = Drain(order, &run);
+  ASSERT_TRUE(first.status.ok()) << first.status.message();
+
+  source.SetRows(
+      {{0, std::nullopt, 200}, {1, 0, 201}, {2, 0, 202}, {3, 1, 203}});
+  run.Rewind();
+  Output second = Drain(order, &run);
+  ASSERT_TRUE(second.status.ok()) << second.status.message();
+  EXPECT_THAT(second.payload, ElementsAre(200, 201, 202, 203));
+}
+
+TEST(TreeOrderTest, RewindDiscardsAFailedBufferedFill) {
+  RowSource source({{0, 1, 100}, {1, 0, 101}}, 2);
+  std::vector<std::unique_ptr<Operator>> numbering;
+  numbering.push_back(std::make_unique<TreeNumberNodes>(0, 1));
+  Pipeline numbered(source, std::move(numbering));
+  TreeParentFirst order(numbered, 3, 4);
+  Execution run(order);
+  Output failed = Drain(order, &run);
+  ASSERT_FALSE(failed.status.ok());
+
+  source.SetRows(ParentFirstRows());
+  run.Rewind();
+  Output recovered = Drain(order, &run);
+  ASSERT_TRUE(recovered.status.ok()) << recovered.status.message();
+  EXPECT_THAT(recovered.payload, ElementsAre(100, 101, 102, 103));
 }
 
 // Child first is not merely "every child before its parent": it is a depth

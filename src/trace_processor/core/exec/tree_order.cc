@@ -86,17 +86,27 @@ base::Status TreeOrder::status(const OperatorState& state) const {
   return s.status.ok() ? input_.status(*s.input) : s.status;
 }
 
-void TreeOrder::Note(State& s,
+bool TreeOrder::Note(State& s,
                      uint32_t node,
                      uint32_t parent,
                      uint32_t row,
                      bool buffering) const {
+  if (node == parent) {
+    s.status =
+        base::ErrStatus("%s: a node is its own parent", Name(spec_.want));
+    return false;
+  }
   s.nodes_seen = std::max(s.nodes_seen, node + 1);
   if (parent != kNoNode) {
     s.nodes_seen = std::max(s.nodes_seen, parent + 1);
   }
   if (s.has_row.size() < s.nodes_seen) {
     s.has_row.resize(s.nodes_seen);
+  }
+  if (s.has_row.is_set(node)) {
+    s.status = base::ErrStatus("%s: more than one row has the same node",
+                               Name(spec_.want));
+    return false;
   }
   if (parent != kNoNode) {
     // Having already seen the parent rules out child first; not having seen
@@ -114,6 +124,7 @@ void TreeOrder::Note(State& s,
     }
     s.row_of_node[node] = row;
   }
+  return true;
 }
 
 // `buffering` says whether the rows are being held to be reordered. Streaming
@@ -142,7 +153,10 @@ bool TreeOrder::Consume(RowBatch& batch, State& s, bool buffering) const {
     s.parents.insert(s.parents.end(), parents, parents + count);
   }
   for (uint32_t i = 0; i < count; ++i) {
-    Note(s, nodes[i], parents[i], static_cast<uint32_t>(base) + i, buffering);
+    if (!Note(s, nodes[i], parents[i], static_cast<uint32_t>(base) + i,
+              buffering)) {
+      return false;
+    }
   }
 
   if (buffering) {
@@ -312,15 +326,17 @@ bool TreeOrder::GetData(RowBatch& out, OperatorState& state) const {
 void TreeOrder::Rewind(OperatorState& state) const {
   State& s = state.Cast<State>();
   input_.Rewind(*s.input);
+  s.has_row.clear();
+  s.row_of_node.clear();
+  s.parent_first = true;
+  s.child_first = true;
+  s.nodes_seen = 0;
+  s.nodes.clear();
+  s.parents.clear();
+  s.rows.Clear();
+  s.order.clear();
   s.emitted = 0;
-  if (mode_ == Mode::kStreaming) {
-    s.has_row.clear();
-    s.nodes_seen = 0;
-    s.parent_first = true;
-    s.child_first = true;
-    s.nodes.clear();
-    s.parents.clear();
-  }
+  s.filled = false;
   s.status = base::OkStatus();
 }
 

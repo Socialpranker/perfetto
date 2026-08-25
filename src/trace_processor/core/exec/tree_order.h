@@ -59,6 +59,7 @@ class TreeOrder : public Source {
   };
 
   TreeOrder(const Source& input, Spec spec);
+  TreeOrder(Source&&, Spec) = delete;
   ~TreeOrder() override;
 
   std::unique_ptr<OperatorState> MakeState() const override;
@@ -105,7 +106,7 @@ class TreeOrder : public Source {
   bool Fill(State&) const;
   bool Consume(RowBatch& batch, State&, bool buffering) const;
   bool Sort(State&) const;
-  void Note(State&,
+  bool Note(State&,
             uint32_t node,
             uint32_t parent,
             uint32_t row,
@@ -123,6 +124,10 @@ class TreeParentFirst : public TreeOrder {
                   uint32_t node_column,
                   uint32_t parent_column,
                   std::optional<TreeRowOrder> arriving = std::nullopt);
+  TreeParentFirst(Source&&,
+                  uint32_t,
+                  uint32_t,
+                  std::optional<TreeRowOrder> = std::nullopt) = delete;
   ~TreeParentFirst() override;
 };
 
@@ -133,6 +138,10 @@ class TreeChildFirst : public TreeOrder {
                  uint32_t node_column,
                  uint32_t parent_column,
                  std::optional<TreeRowOrder> arriving = std::nullopt);
+  TreeChildFirst(Source&&,
+                 uint32_t,
+                 uint32_t,
+                 std::optional<TreeRowOrder> = std::nullopt) = delete;
   ~TreeChildFirst() override;
 };
 
