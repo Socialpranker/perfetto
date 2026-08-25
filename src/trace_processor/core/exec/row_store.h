@@ -67,6 +67,7 @@ class RowStore {
   // from any chunk, which no single view can span, so the values are gathered
   // into reused storage. The result stays valid until the next indexed View()
   // on this store.
+  void View(RowBatch* batch, Span<const uint32_t> rows);
 
   // Drops all the rows but keeps the allocated chunks.
   void Clear();
