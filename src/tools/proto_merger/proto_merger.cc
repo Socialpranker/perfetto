@@ -388,9 +388,10 @@ base::Status MergeFields(const std::vector<ProtoFile::Field>& input,
     out.emplace_back(std::move(out_field));
   }
 
-  // Append reserved fields from input as deprecated fields, unless they use a deleted type.
+  // Append reserved fields from input as deprecated fields, unless they use a
+  // deleted type.
   for (const auto& input_field : input) {
-    if (reserved_numbers.count(input_field.number)&&
+    if (reserved_numbers.count(input_field.number) &&
         !deleted_type_names.count(input_field.type)) {
       ProtoFile::Field deprecated_field = input_field;
       MarkFieldAsDeprecated(deprecated_field);
@@ -507,7 +508,6 @@ base::Status Merge(const ProtoFile::Message& input,
   for (const auto& msg : out.deleted_nested_messages)
     deleted_type_names.insert(msg.name);
 
-
   for (auto& field : ComputeDeletedByNumber(input.fields, upstream.fields)) {
     bool is_deleted_type = deleted_type_names.count(field.type);
     if (!upstream.reserved_numbers.count(field.number) || is_deleted_type) {
@@ -517,7 +517,7 @@ base::Status Merge(const ProtoFile::Message& input,
       }
       out.deleted_fields.emplace_back(std::move(out_field));
     }
-  } 
+  }
 
   // Merge any nested enum types.
   out.enums = MergeEnums(input.enums, upstream.enums, allowlist.enums,
