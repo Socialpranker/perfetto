@@ -173,10 +173,27 @@ TEST_F(ColumnTypesTest, ArmsOfACompoundMustAgree) {
               testing::ElementsAre("id:?"));
 }
 
-TEST_F(ColumnTypesTest, AnIntegerAndAFloatWeakenToAFloat) {
+TEST_F(ColumnTypesTest, MixedNumericCompoundColumnsAreUnknown) {
   catalog_.AddDataframe("f", {Typed("id", StorageType{Double{}})});
   EXPECT_THAT(Select("SELECT id FROM slice UNION ALL SELECT id FROM f"),
-              testing::ElementsAre("id:double"));
+              testing::ElementsAre("id:?"));
+}
+
+TEST_F(ColumnTypesTest, ExplicitViewColumnNamesReplaceBodyNames) {
+  catalog_.AddView("v", "CREATE VIEW v(public_id) AS SELECT id FROM slice");
+  EXPECT_THAT(Select("SELECT public_id FROM v"),
+              testing::ElementsAre("public_id:int"));
+}
+
+TEST_F(ColumnTypesTest, UnqualifiedStarCoalescesUsingColumns) {
+  EXPECT_THAT(
+      Select("SELECT * FROM slice JOIN thread USING(name)"),
+      testing::ElementsAre("id:int", "ts:int", "name:string", "utid:int"));
+  EXPECT_THAT(
+      Select("SELECT * FROM slice NATURAL JOIN thread"),
+      testing::ElementsAre("id:int", "ts:int", "name:string", "utid:int"));
+  EXPECT_THAT(Select("SELECT thread.* FROM slice JOIN thread USING(name)"),
+              testing::ElementsAre("utid:int", "name:string"));
 }
 
 TEST_F(ColumnTypesTest, ABareRelationResolves) {
@@ -236,6 +253,12 @@ TEST_F(ColumnTypesTest, AFilteredViewDoesNotReadStraightThrough) {
   EXPECT_EQ(PassthroughDataframe("v", catalog_), "");
 }
 
+TEST_F(ColumnTypesTest, AnOrderedViewDoesNotReadStraightThrough) {
+  catalog_.AddView(
+      "v", "CREATE VIEW v AS SELECT id, ts FROM slice ORDER BY ts DESC");
+  EXPECT_EQ(PassthroughDataframe("v", catalog_), "");
+}
+
 TEST_F(ColumnTypesTest, AnythingWhichTouchesTheRowsDoesNotReadThrough) {
   catalog_.AddView("computed",
                    "CREATE VIEW computed AS SELECT ts * 2 AS a FROM slice");
@@ -252,7 +275,7 @@ TEST_F(ColumnTypesTest, AnythingWhichTouchesTheRowsDoesNotReadThrough) {
   EXPECT_EQ(PassthroughDataframe("joined", catalog_), "");
 }
 
-// Traced through any number of renaming views.
+// Traced through a chain of renaming views.
 TEST_F(ColumnTypesTest, ReadingThroughSurvivesAChainOfViews) {
   catalog_.AddView("v1", "CREATE VIEW v1 AS SELECT id, ts FROM slice");
   catalog_.AddView("v2", "CREATE VIEW v2 AS SELECT id AS a, ts AS b FROM v1");

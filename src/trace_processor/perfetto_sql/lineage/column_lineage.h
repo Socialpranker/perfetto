@@ -32,9 +32,8 @@ struct ResolvedColumn {
   // Nothing when the column could not be traced back to a dataframe, which
   // covers every expression and everything read from a plain SQLite table.
   std::optional<core::StorageType> type;
-  // The dataframe column this was traced back to, empty when it was not. A
-  // view which only renames the columns it reads is a re-export, so tracing
-  // sees through any number of such views.
+  // The dataframe and column this was traced back to, empty when it was not. A
+  // view which only renames columns is traced through, up to 32 views deep.
   std::string dataframe;
   std::string dataframe_column;
 };

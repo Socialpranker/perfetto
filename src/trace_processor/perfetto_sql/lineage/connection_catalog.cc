@@ -53,29 +53,40 @@ ConnectionCatalog::~ConnectionCatalog() = default;
 
 const std::vector<ResolvedColumn>* ConnectionCatalog::Dataframe(
     const std::string& name) const {
-  auto it = dataframes_.find(name);
-  if (it != dataframes_.end()) {
-    return it->second.empty() ? nullptr : &it->second;
-  }
-  std::vector<ResolvedColumn>& columns = dataframes_[name];
   const dataframe::Dataframe* df = connection_->GetDataframeOrNull(name);
   if (!df) {
+    dataframes_.erase(name);
     return nullptr;
   }
+  CachedDataframe& cached = dataframes_[name];
+  uint64_t mutations = df->mutations();
+  if (cached.dataframe == df && cached.mutations == mutations) {
+    return cached.columns.empty() ? nullptr : &cached.columns;
+  }
+  cached.dataframe = df;
+  cached.mutations = mutations;
+  cached.columns.clear();
   for (uint32_t i = 0; i < df->column_count(); ++i) {
     ResolvedColumn column;
     column.name = df->column_names()[i];
     column.type = df->column_type(i);
-    columns.push_back(std::move(column));
+    cached.columns.push_back(std::move(column));
   }
-  return columns.empty() ? nullptr : &columns;
+  return cached.columns.empty() ? nullptr : &cached.columns;
 }
 
 std::optional<std::string> ConnectionCatalog::ViewSql(
     const std::string& name) const {
+  std::string quoted = Quoted(name);
   auto res = connection_->ExecuteUntilLastStatement(SqlSource::FromExecuteQuery(
-      "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = " +
-      Quoted(name)));
+      "SELECT sql FROM ("
+      "SELECT sql, 0 AS priority FROM sqlite_temp_master "
+      "WHERE type = 'view' AND name = " +
+      quoted +
+      " UNION ALL "
+      "SELECT sql, 1 AS priority FROM sqlite_master "
+      "WHERE type = 'view' AND name = " +
+      quoted + ") ORDER BY priority LIMIT 1"));
   if (!res.ok() || res->stmt.IsDone()) {
     return std::nullopt;
   }

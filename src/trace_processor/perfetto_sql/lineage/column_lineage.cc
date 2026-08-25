@@ -16,6 +16,8 @@
 
 #include "src/trace_processor/perfetto_sql/lineage/column_lineage.h"
 
+#include <algorithm>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -55,21 +57,28 @@ std::string Text(SyntaqliteParser* p, SyntaqliteTextSpan span) {
 struct Relation {
   std::string name;
   std::optional<std::vector<ResolvedColumn>> columns;
+  // Columns omitted from an unqualified `*` because a join coalesces them
+  // with a column on its left.
+  std::vector<std::string> hidden_from_star;
 };
 
-// The type two sources of one column agree on, which is the type a column
-// joined with USING has.
 std::optional<StorageType> Weaken(const std::optional<StorageType>& a,
                                   const std::optional<StorageType>& b) {
-  if (!a || !b) {
-    return std::nullopt;
-  }
-  if (*a == *b) {
-    return a;
-  }
-  bool numeric = (a->Is<Int64>() || a->Is<Double>()) &&
-                 (b->Is<Int64>() || b->Is<Double>());
-  return numeric ? std::make_optional(StorageType{Double{}}) : std::nullopt;
+  return a && b && *a == *b ? a : std::nullopt;
+}
+
+bool IsNatural(SyntaqliteJoinType type) {
+  return type == SYNTAQLITE_JOIN_TYPE_NATURAL_INNER ||
+         type == SYNTAQLITE_JOIN_TYPE_NATURAL_LEFT ||
+         type == SYNTAQLITE_JOIN_TYPE_NATURAL_RIGHT ||
+         type == SYNTAQLITE_JOIN_TYPE_NATURAL_FULL;
+}
+
+bool ContainsName(const std::vector<std::string>& names,
+                  const std::string& name) {
+  return std::any_of(names.begin(), names.end(), [&](const std::string& n) {
+    return base::CaseInsensitiveEqual(n, name);
+  });
 }
 
 class Resolver {
@@ -154,9 +163,61 @@ base::Status Resolver::Sources(SyntaqliteParser* p,
     return base::OkStatus();
   }
   switch (static_cast<int>(node->tag)) {
-    case SYNTAQLITE_NODE_JOIN_CLAUSE:
+    case SYNTAQLITE_NODE_JOIN_CLAUSE: {
+      size_t begin = scope->size();
       RETURN_IF_ERROR(Sources(p, node->join_clause.left, depth, scope));
-      return Sources(p, node->join_clause.right, depth, scope);
+      size_t right = scope->size();
+      RETURN_IF_ERROR(Sources(p, node->join_clause.right, depth, scope));
+
+      std::vector<std::string> joined;
+      if (syntaqlite_node_is_present(node->join_clause.using_columns)) {
+        const void* list =
+            syntaqlite_parser_node(p, node->join_clause.using_columns);
+        uint32_t count = syntaqlite_list_count(list);
+        for (uint32_t i = 0; i < count; ++i) {
+          const SyntaqliteNode* column =
+              Node(p, syntaqlite_list_child_id(list, i));
+          if (column && column->tag == SYNTAQLITE_NODE_COLUMN_REF) {
+            joined.push_back(Text(p, column->column_ref.column));
+          }
+        }
+      } else if (IsNatural(node->join_clause.join_type)) {
+        std::vector<std::string> left_names;
+        for (size_t i = begin; i < right; ++i) {
+          if (!(*scope)[i].columns) {
+            continue;
+          }
+          for (const ResolvedColumn& column : *(*scope)[i].columns) {
+            if (!ContainsName((*scope)[i].hidden_from_star, column.name)) {
+              left_names.push_back(column.name);
+            }
+          }
+        }
+        for (size_t i = right; i < scope->size(); ++i) {
+          if (!(*scope)[i].columns) {
+            continue;
+          }
+          for (const ResolvedColumn& column : *(*scope)[i].columns) {
+            if (ContainsName(left_names, column.name) &&
+                !ContainsName(joined, column.name)) {
+              joined.push_back(column.name);
+            }
+          }
+        }
+      }
+      for (size_t i = right; i < scope->size(); ++i) {
+        if (!(*scope)[i].columns) {
+          continue;
+        }
+        for (const ResolvedColumn& column : *(*scope)[i].columns) {
+          if (ContainsName(joined, column.name) &&
+              !ContainsName((*scope)[i].hidden_from_star, column.name)) {
+            (*scope)[i].hidden_from_star.push_back(column.name);
+          }
+        }
+      }
+      return base::OkStatus();
+    }
     case SYNTAQLITE_NODE_JOIN_PREFIX:
       return Sources(p, node->join_prefix.source, depth, scope);
     case SYNTAQLITE_NODE_TABLE_REF: {
@@ -168,10 +229,10 @@ base::Status Resolver::Sources(SyntaqliteParser* p,
       base::StatusOr<std::vector<ResolvedColumn>> columns =
           Relation(name, depth);
       if (!columns.ok()) {
-        scope->push_back({std::move(alias), std::nullopt});
+        scope->push_back({std::move(alias), std::nullopt, {}});
         return base::OkStatus();
       }
-      scope->push_back({std::move(alias), std::move(*columns)});
+      scope->push_back({std::move(alias), std::move(*columns), {}});
       return base::OkStatus();
     }
     case SYNTAQLITE_NODE_SUBQUERY_TABLE_SOURCE: {
@@ -183,16 +244,16 @@ base::Status Resolver::Sources(SyntaqliteParser* p,
       base::StatusOr<std::vector<ResolvedColumn>> columns =
           Select(p, node->subquery_table_source.select, depth);
       if (!columns.ok()) {
-        scope->push_back({std::move(alias), std::nullopt});
+        scope->push_back({std::move(alias), std::nullopt, {}});
         return base::OkStatus();
       }
-      scope->push_back({std::move(alias), std::move(*columns)});
+      scope->push_back({std::move(alias), std::move(*columns), {}});
       return base::OkStatus();
     }
     default:
       // Anything else in a FROM clause is a shape this does not understand.
       passthrough_ = false;
-      scope->push_back({std::string(), std::nullopt});
+      scope->push_back({std::string(), std::nullopt, {}});
       return base::OkStatus();
   }
 }
@@ -209,6 +270,7 @@ base::StatusOr<std::vector<ResolvedColumn>> Resolver::SelectStmt(
   if (syntaqlite_node_is_present(select.where_clause) ||
       syntaqlite_node_is_present(select.groupby) ||
       syntaqlite_node_is_present(select.having) ||
+      syntaqlite_node_is_present(select.orderby) ||
       syntaqlite_node_is_present(select.limit_clause) ||
       select.flags.bits.distinct || scope.size() != 1) {
     passthrough_ = false;
@@ -234,6 +296,8 @@ base::StatusOr<std::vector<ResolvedColumn>> Resolver::SelectStmt(
       if (const SyntaqliteNode* e = Node(p, column.expr)) {
         if (e->tag == SYNTAQLITE_NODE_COLUMN_REF) {
           table = Text(p, e->column_ref.table);
+        } else if (e->tag == SYNTAQLITE_NODE_IDENT_NAME) {
+          table = Text(p, e->ident_name.source);
         }
       }
       for (const lineage::Relation& relation : scope) {
@@ -246,6 +310,10 @@ base::StatusOr<std::vector<ResolvedColumn>> Resolver::SelectStmt(
               "column lineage: '*' over a relation of unknown shape");
         }
         for (const ResolvedColumn& c : *relation.columns) {
+          if (table.empty() &&
+              ContainsName(relation.hidden_from_star, c.name)) {
+            continue;
+          }
           out.push_back(c);
         }
       }
@@ -352,14 +420,37 @@ base::StatusOr<std::vector<ResolvedColumn>> Resolver::Relation(
     return base::ErrStatus("column lineage: empty view '%s'", name.c_str());
   }
   uint32_t select = 0;
+  uint32_t column_names = 0;
   if (node->tag == SYNTAQLITE_NODE_CREATE_VIEW_STMT) {
     select = node->create_view_stmt.select;
+    column_names = node->create_view_stmt.column_names;
   } else if (node->tag == SYNTAQLITE_NODE_CREATE_PERFETTO_VIEW_STMT) {
     select = node->create_perfetto_view_stmt.select;
   } else {
     return base::ErrStatus("column lineage: '%s' is not a view", name.c_str());
   }
-  return Select(p.get(), select, depth + 1);
+  base::StatusOr<std::vector<ResolvedColumn>> columns =
+      Select(p.get(), select, depth + 1);
+  RETURN_IF_ERROR(columns.status());
+  if (syntaqlite_node_is_present(column_names)) {
+    const void* list = syntaqlite_parser_node(p.get(), column_names);
+    uint32_t count = syntaqlite_list_count(list);
+    if (count != columns->size()) {
+      return base::ErrStatus(
+          "column lineage: view '%s' names %u columns for %u results",
+          name.c_str(), count, static_cast<uint32_t>(columns->size()));
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      const SyntaqliteNode* column =
+          Node(p.get(), syntaqlite_list_child_id(list, i));
+      if (!column || column->tag != SYNTAQLITE_NODE_COLUMN_REF) {
+        return base::ErrStatus("column lineage: invalid column name in '%s'",
+                               name.c_str());
+      }
+      (*columns)[i].name = Text(p.get(), column->column_ref.column);
+    }
+  }
+  return columns;
 }
 
 }  // namespace

@@ -17,6 +17,7 @@
 #ifndef SRC_TRACE_PROCESSOR_PERFETTO_SQL_LINEAGE_CONNECTION_CATALOG_H_
 #define SRC_TRACE_PROCESSOR_PERFETTO_SQL_LINEAGE_CONNECTION_CATALOG_H_
 
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -39,10 +40,14 @@ class ConnectionCatalog : public Catalog {
   std::optional<std::string> ViewSql(const std::string& name) const override;
 
  private:
+  struct CachedDataframe {
+    const dataframe::Dataframe* dataframe = nullptr;
+    uint64_t mutations = 0;
+    std::vector<ResolvedColumn> columns;
+  };
+
   PerfettoSqlConnection* connection_;
-  // Cached because the columns are handed back by pointer, and because the
-  // same name is usually looked up more than once.
-  mutable std::map<std::string, std::vector<ResolvedColumn>> dataframes_;
+  mutable std::map<std::string, CachedDataframe> dataframes_;
 };
 
 }  // namespace perfetto::trace_processor::lineage

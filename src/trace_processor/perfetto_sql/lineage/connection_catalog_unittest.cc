@@ -47,14 +47,16 @@ TEST_F(ConnectionCatalogTest, APerfettoTableIsADataframe) {
   Exec("CREATE PERFETTO TABLE t AS SELECT 1 AS a, 'x' AS b");
   const std::vector<ResolvedColumn>* columns = catalog_.Dataframe("t");
   ASSERT_NE(columns, nullptr);
-  std::vector<std::string> names;
-  for (const ResolvedColumn& column : *columns) {
-    EXPECT_TRUE(column.type.has_value()) << column.name;
-    names.push_back(column.name);
-  }
-  // A perfetto table carries an id column of its own alongside the selected
-  // columns.
-  EXPECT_THAT(names, testing::IsSupersetOf({"a", "b"}));
+  ASSERT_EQ(columns->size(), 3u);
+  EXPECT_EQ((*columns)[0].name, "a");
+  EXPECT_EQ((*columns)[1].name, "b");
+  EXPECT_EQ((*columns)[2].name, "_auto_id");
+  ASSERT_TRUE((*columns)[0].type.has_value());
+  ASSERT_TRUE((*columns)[1].type.has_value());
+  ASSERT_TRUE((*columns)[2].type.has_value());
+  EXPECT_TRUE((*columns)[0].type->Is<core::Uint32>());
+  EXPECT_TRUE((*columns)[1].type->Is<core::String>());
+  EXPECT_TRUE((*columns)[2].type->Is<core::Id>());
 }
 
 TEST_F(ConnectionCatalogTest, APlainSqliteTableIsNot) {
@@ -74,6 +76,45 @@ TEST_F(ConnectionCatalogTest, AViewHandsBackWhatSqliteStored) {
 TEST_F(ConnectionCatalogTest, SomethingWhichIsNeitherIsNeither) {
   EXPECT_EQ(catalog_.Dataframe("nope"), nullptr);
   EXPECT_FALSE(catalog_.ViewSql("nope").has_value());
+}
+
+TEST_F(ConnectionCatalogTest, ADataframeCreatedAfterAMissIsFound) {
+  EXPECT_EQ(catalog_.Dataframe("t"), nullptr);
+  Exec("CREATE PERFETTO TABLE t AS SELECT 1 AS value");
+  const std::vector<ResolvedColumn>* columns = catalog_.Dataframe("t");
+  ASSERT_NE(columns, nullptr);
+  ASSERT_EQ(columns->size(), 2u);
+  EXPECT_EQ((*columns)[0].name, "value");
+  EXPECT_TRUE((*columns)[0].type->Is<core::Uint32>());
+}
+
+TEST_F(ConnectionCatalogTest, AReplacedDataframeRefreshesItsSchema) {
+  Exec("CREATE PERFETTO TABLE t AS SELECT 1 AS old_value");
+  ASSERT_NE(catalog_.Dataframe("t"), nullptr);
+  Exec("CREATE OR REPLACE PERFETTO TABLE t AS SELECT 'x' AS new_value");
+
+  const std::vector<ResolvedColumn>* columns = catalog_.Dataframe("t");
+  ASSERT_NE(columns, nullptr);
+  ASSERT_EQ(columns->size(), 2u);
+  EXPECT_EQ((*columns)[0].name, "new_value");
+  ASSERT_TRUE((*columns)[0].type.has_value());
+  EXPECT_TRUE((*columns)[0].type->Is<core::String>());
+}
+
+TEST_F(ConnectionCatalogTest, ATemporaryViewShadowsAMainView) {
+  Exec("CREATE PERFETTO TABLE ints AS SELECT 1 AS value");
+  Exec("CREATE PERFETTO TABLE strings AS SELECT 'x' AS value");
+  Exec("CREATE VIEW v AS SELECT value FROM ints");
+  Exec("CREATE TEMP VIEW v AS SELECT value FROM strings");
+
+  std::optional<std::string> sql = catalog_.ViewSql("v");
+  ASSERT_TRUE(sql.has_value());
+  EXPECT_THAT(*sql, testing::HasSubstr("strings"));
+  auto columns = ResolveRelation("v", catalog_);
+  ASSERT_TRUE(columns.ok()) << columns.status().c_message();
+  ASSERT_EQ(columns->size(), 1u);
+  ASSERT_TRUE((*columns)[0].type.has_value());
+  EXPECT_TRUE((*columns)[0].type->Is<core::String>());
 }
 
 // The point of the catalog: a query over a real table comes back typed.
