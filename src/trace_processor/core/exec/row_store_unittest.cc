@@ -24,6 +24,7 @@
 #include "src/trace_processor/core/exec/column_view.h"
 #include "src/trace_processor/core/exec/row_batch.h"
 #include "src/trace_processor/core/exec/row_selection.h"
+#include "src/trace_processor/core/exec/test_utils.h"
 #include "src/trace_processor/core/exec/variant.h"
 #include "src/trace_processor/core/util/bit_vector.h"
 #include "src/trace_processor/core/util/span.h"
@@ -48,22 +49,12 @@ void Fill(RowBatch* batch,
 // Reads every row of the store back, a run at a time.
 std::vector<int64_t> ReadAll(const RowStore& store, uint32_t column);
 
-std::vector<int64_t> ReadInt64(const RowBatch& batch, uint32_t column) {
-  const ColumnView& view = batch.column(column);
-  const auto* data = static_cast<const int64_t*>(view.data());
-  std::vector<int64_t> out;
-  for (uint32_t i = 0; i < batch.size(); ++i) {
-    out.push_back(data[view.selection().GetIndex(i)]);
-  }
-  return out;
-}
-
 std::vector<int64_t> ReadAll(const RowStore& store, uint32_t column) {
   RowBatch batch;
   std::vector<int64_t> out;
   for (uint32_t at = 0; at < store.size();) {
     at += store.View(&batch, at, store.size() - at);
-    std::vector<int64_t> run = ReadInt64(batch, column);
+    std::vector<int64_t> run = test::ReadColumn<int64_t>(batch, column);
     out.insert(out.end(), run.begin(), run.end());
   }
   return out;
@@ -121,7 +112,7 @@ TEST(RowStoreTest, HandsBackARunOfItsRows) {
   RowBatch out;
   EXPECT_EQ(store.View(&out, 2, 3), 3u);
   EXPECT_EQ(out.size(), 3u);
-  EXPECT_THAT(ReadInt64(out, 0), ElementsAre(12, 13, 14));
+  EXPECT_THAT(test::ReadColumn<int64_t>(out, 0), ElementsAre(12, 13, 14));
 }
 
 TEST(RowStoreTest, HandsBackTheRowsAnOrderPicksOut) {
@@ -134,7 +125,7 @@ TEST(RowStoreTest, HandsBackTheRowsAnOrderPicksOut) {
 
   RowBatch out;
   store.View(&out, Span<const uint32_t>(order.data(), order.data() + 3));
-  EXPECT_THAT(ReadInt64(out, 0), ElementsAre(14, 13, 10));
+  EXPECT_THAT(test::ReadColumn<int64_t>(out, 0), ElementsAre(14, 13, 10));
 }
 
 // Viewing twice must not accumulate columns in the batch.
@@ -370,7 +361,7 @@ TEST(RowStoreTest, GathersRowsFromSeveralChunks) {
   for (uint32_t row : order) {
     expected.push_back(all[row]);
   }
-  EXPECT_EQ(ReadInt64(out, 0), expected);
+  EXPECT_EQ(test::ReadColumn<int64_t>(out, 0), expected);
 }
 
 // A batch keeps the values it was handed alive, so it does not dangle when the
@@ -385,7 +376,7 @@ TEST(RowStoreTest, ABatchOutlivesTheStore) {
     ASSERT_TRUE(store.Append(batch).ok());
     store.View(&out, 0, 3);
   }
-  EXPECT_THAT(ReadInt64(out, 0), ElementsAre(10, 11, 12));
+  EXPECT_THAT(test::ReadColumn<int64_t>(out, 0), ElementsAre(10, 11, 12));
 }
 
 TEST(RowStoreTest, KeepsAColumnWhoseTypeIsPerRow) {
