@@ -40,15 +40,21 @@ source_set("exec") {
   ]
 }
 
+source_set("test_utils") {
+  testonly = true
+  sources = [ "test_utils.h" ]
+  deps = [ ":exec" ]
+}
+
 perfetto_unittest_source_set("unittests") {
   testonly = true
   sources = [
     "operator_unittest.cc",
     "row_store_unittest.cc",
-    "test_utils.h",
   ]
   deps = [
     ":exec",
+    ":test_utils",
     "../../../../gn:default_deps",
     "../../../../gn:gtest_and_gmock",
     "../../../base",
