@@ -29,8 +29,8 @@ namespace perfetto::trace_processor::core::exec {
 //
 // Operators and Sources are plan nodes: they stay const while running and hold
 // no values. Everything which changes as a query runs lives here, created by
-// the plan node and owned by the executor. So one plan can be run twice, or
-// twice at once, and destroying a plan cannot invalidate a running query.
+// the plan node and owned by the executor. A plan can be run more than once or
+// concurrently, but it and its borrowed dependencies must outlive each run.
 class OperatorState {
  public:
   OperatorState() = default;

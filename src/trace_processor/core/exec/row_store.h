@@ -65,8 +65,8 @@ class RowStore {
 
   // Points `batch` at the rows `rows` picks out, in that order. They can come
   // from any chunk, which no single view can span, so the values are gathered
-  // into storage the store owns and reuses.
-  void View(RowBatch* batch, Span<const uint32_t> rows);
+  // into reused storage. The result stays valid until the next indexed View()
+  // on this store.
 
   // Drops all the rows but keeps the allocated chunks.
   void Clear();
@@ -93,11 +93,13 @@ class RowStore {
     std::shared_ptr<Chunk> gathered;
   };
 
-  base::Status AppendColumn(Column&, const ColumnView&, uint32_t count);
+  base::Status ValidateColumn(const Column&, const ColumnView&) const;
+  void AppendColumn(Column&, const ColumnView&, uint32_t count);
   ColumnView ViewOf(const Column&, const Chunk&) const;
   Chunk& ChunkAt(Column&, uint32_t index) const;
 
   std::vector<Column> columns_;
+  bool initialized_ = false;
   uint32_t size_ = 0;
 };
 

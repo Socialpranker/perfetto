@@ -173,6 +173,81 @@ TEST(RowStoreTest, KeepsWhichRowsHeldNothing) {
   EXPECT_TRUE(kept->is_set(2));
 }
 
+TEST(RowStoreTest, BackfillsEarlierChunksWhenNullabilityAppears) {
+  std::vector<int64_t> values(RowStore::kChunkRows, 1);
+  RowStore store;
+  RowBatch batch;
+  Fill(&batch, values, 0, RowStore::kChunkRows);
+  ASSERT_TRUE(store.Append(batch).ok());
+
+  BitVector validity = BitVector::CreateWithSize(1);
+  int64_t null_value = 0;
+  batch.Reset();
+  batch.AddColumn(
+      ColumnView::Reference(StorageType{Int64{}}, &null_value, &validity));
+  batch.SetCardinality(1);
+  ASSERT_TRUE(store.Append(batch).ok());
+
+  RowBatch out;
+  ASSERT_EQ(store.View(&out, 0, RowStore::kChunkRows), RowStore::kChunkRows);
+  ASSERT_NE(out.column(0).validity(), nullptr);
+  EXPECT_EQ(out.column(0).validity()->CountSetBits(), RowStore::kChunkRows);
+  ASSERT_EQ(store.View(&out, RowStore::kChunkRows, 1), 1u);
+  EXPECT_FALSE(out.column(0).validity()->is_set(0));
+}
+
+TEST(RowStoreTest, RejectsABatchBeforeMutatingAnyColumn) {
+  std::vector<int64_t> ints = {1, 2};
+  std::vector<double> doubles = {1.0, 2.0};
+  RowStore store;
+  RowBatch batch;
+  batch.AddColumn(ColumnView::Reference(StorageType{Int64{}}, ints.data()));
+  batch.AddColumn(ColumnView::Reference(StorageType{Int64{}}, ints.data()));
+  batch.SetCardinality(1);
+  ASSERT_TRUE(store.Append(batch).ok());
+
+  BitVector validity = BitVector::CreateWithSize(2);
+  validity.set(1);
+  batch.Reset();
+  batch.AddColumn(
+      ColumnView::Reference(StorageType{Int64{}}, ints.data(), &validity));
+  batch.AddColumn(ColumnView::Reference(StorageType{Double{}}, doubles.data()));
+  batch.Compose(RowSelection::Range(1), 1);
+  batch.SetCardinality(1);
+  EXPECT_FALSE(store.Append(batch).ok());
+
+  RowBatch out;
+  ASSERT_EQ(store.View(&out, 0, 1), 1u);
+  EXPECT_EQ(out.column(0).validity(), nullptr);
+  EXPECT_EQ(store.size(), 1u);
+}
+
+TEST(RowStoreTest, AZeroColumnBatchFixesTheSchema) {
+  RowStore store;
+  RowBatch empty_schema;
+  empty_schema.SetCardinality(2);
+  ASSERT_TRUE(store.Append(empty_schema).ok());
+
+  std::vector<int64_t> values = {1};
+  RowBatch with_column;
+  Fill(&with_column, values, 0, 1);
+  EXPECT_FALSE(store.Append(with_column).ok());
+  EXPECT_EQ(store.size(), 2u);
+  EXPECT_EQ(store.column_count(), 0u);
+}
+
+TEST(RowStoreTest, ViewingAnEmptySuffixReturnsAnEmptyBatch) {
+  std::vector<int64_t> values(RowStore::kChunkRows);
+  RowStore store;
+  RowBatch batch;
+  Fill(&batch, values, 0, RowStore::kChunkRows);
+  ASSERT_TRUE(store.Append(batch).ok());
+
+  RowBatch out;
+  EXPECT_EQ(store.View(&out, store.size(), 0), 0u);
+  EXPECT_EQ(out.size(), 0u);
+}
+
 // An Id column has no storage: its value is the row it sits at, so storing one
 // means materialising those rows.
 TEST(RowStoreTest, AnIdColumnBecomesTheRowsItStoodFor) {
@@ -238,7 +313,8 @@ TEST(RowStoreTest, ARunStopsAtTheEndOfAChunk) {
 
   RowBatch out;
   EXPECT_EQ(store.View(&out, 1, store.size() - 1), RowStore::kChunkRows - 1);
-  EXPECT_EQ(store.View(&out, RowStore::kChunkRows, store.size()),
+  EXPECT_EQ(store.View(&out, RowStore::kChunkRows,
+                       store.size() - RowStore::kChunkRows),
             RowStore::kChunkRows);
 }
 

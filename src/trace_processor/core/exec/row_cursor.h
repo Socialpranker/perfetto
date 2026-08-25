@@ -36,6 +36,7 @@ namespace perfetto::trace_processor::core::exec {
 class RowCursor {
  public:
   explicit RowCursor(const Source& source);
+  RowCursor(Source&&) = delete;
   ~RowCursor();
 
   // Rewinds and moves to the first row.

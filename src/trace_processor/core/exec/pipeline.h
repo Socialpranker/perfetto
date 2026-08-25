@@ -31,6 +31,7 @@ namespace perfetto::trace_processor::core::exec {
 class Pipeline : public Source {
  public:
   Pipeline(const Source&, std::vector<std::unique_ptr<Operator>>);
+  Pipeline(Source&&, std::vector<std::unique_ptr<Operator>>) = delete;
   ~Pipeline() override;
 
   std::unique_ptr<OperatorState> MakeState() const override;

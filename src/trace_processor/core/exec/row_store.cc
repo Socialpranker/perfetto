@@ -93,7 +93,7 @@ void CopyIds(const ColumnView& column,
 }
 
 // Copies the validity of `count` of `column`'s rows, starting at its row
-// `from`, to `at`. `at` onwards starts clear.
+// `from`, to `at`.
 void CopyValidity(const ColumnView& column,
                   uint32_t from,
                   uint32_t at,
@@ -115,6 +115,8 @@ void CopyValidity(const ColumnView& column,
   for (uint32_t i = 0; i < count; ++i) {
     if (validity->is_set(rows[i])) {
       into.set(at + i);
+    } else {
+      into.clear(at + i);
     }
   }
 }
@@ -155,24 +157,42 @@ RowStore::Chunk& RowStore::ChunkAt(Column& column, uint32_t index) const {
   return *column.chunks[index];
 }
 
-base::Status RowStore::AppendColumn(Column& into,
-                                    const ColumnView& from,
-                                    uint32_t count) {
+base::Status RowStore::ValidateColumn(const Column& into,
+                                      const ColumnView& from) const {
+  if (!initialized_) {
+    return base::OkStatus();
+  }
   bool variant = from.kind() == ColumnView::Kind::kVariant;
-  if (size_ != 0 && variant != into.variant) {
+  if (variant != into.variant) {
     return base::ErrStatus("row store: a column changed shape");
   }
+  if (variant) {
+    return base::OkStatus();
+  }
+  StorageType type = from.type().Is<Id>() ? StorageType{Uint32{}} : from.type();
+  if (!(type == into.type)) {
+    return base::ErrStatus(
+        "row store: a column arrived holding one type after holding another");
+  }
+  return base::OkStatus();
+}
+
+void RowStore::AppendColumn(Column& into,
+                            const ColumnView& from,
+                            uint32_t count) {
+  bool variant = from.kind() == ColumnView::Kind::kVariant;
   StorageType type = from.type();
-  if (!variant) {
-    if (type.Is<Id>()) {
-      type = StorageType{Uint32{}};
-    }
-    if (size_ != 0 && !(type == into.type)) {
-      return base::ErrStatus(
-          "row store: a column arrived holding one type after holding another");
-    }
+  if (!variant && type.Is<Id>()) {
+    type = StorageType{Uint32{}};
   }
   bool nullable = into.nullable || from.validity() != nullptr;
+  if (nullable && !into.nullable) {
+    for (const std::shared_ptr<Chunk>& chunk : into.chunks) {
+      if (chunk) {
+        chunk->validity = BitVector::CreateWithSize(kChunkRows, true);
+      }
+    }
+  }
 
   for (uint32_t done = 0; done < count;) {
     uint32_t row = size_ + done;
@@ -196,13 +216,8 @@ base::Status RowStore::AppendColumn(Column& into,
       Copy<StringPool::Id>(from, done, at, run, chunk.values);
     }
     if (nullable) {
-      // A chunk's validity is only made once the column is known to need it,
-      // so rows already in this chunk have to be filled in as valid.
       if (chunk.validity.size() == 0) {
         chunk.validity = BitVector::CreateWithSize(kChunkRows);
-        for (uint32_t i = 0; i < at; ++i) {
-          chunk.validity.set(i);
-        }
       }
       CopyValidity(from, done, at, run, chunk.validity);
     }
@@ -211,15 +226,10 @@ base::Status RowStore::AppendColumn(Column& into,
   into.variant = variant;
   into.type = type;
   into.nullable = nullable;
-  return base::OkStatus();
 }
 
 base::Status RowStore::Append(const RowBatch& batch) {
-  uint32_t count = batch.size();
-  if (count == 0) {
-    return base::OkStatus();
-  }
-  if (columns_.empty()) {
+  if (!initialized_) {
     columns_.resize(batch.column_count());
   } else if (columns_.size() != batch.column_count()) {
     return base::ErrStatus(
@@ -227,9 +237,13 @@ base::Status RowStore::Append(const RowBatch& batch) {
         batch.column_count(), static_cast<uint32_t>(columns_.size()));
   }
   for (uint32_t col = 0; col < columns_.size(); ++col) {
-    RETURN_IF_ERROR(AppendColumn(columns_[col], batch.column(col), count));
+    RETURN_IF_ERROR(ValidateColumn(columns_[col], batch.column(col)));
   }
-  size_ += count;
+  for (uint32_t col = 0; col < columns_.size(); ++col) {
+    AppendColumn(columns_[col], batch.column(col), batch.size());
+  }
+  size_ += batch.size();
+  initialized_ = true;
   return base::OkStatus();
 }
 
@@ -258,9 +272,12 @@ uint32_t RowStore::View(RowBatch* batch,
                         uint32_t offset,
                         uint32_t count) const {
   PERFETTO_DCHECK(offset + count <= size_);
+  batch->Reset();
+  if (count == 0) {
+    return 0;
+  }
   uint32_t at = offset % kChunkRows;
   uint32_t served = std::min(count, kChunkRows - at);
-  batch->Reset();
   for (const Column& column : columns_) {
     const std::shared_ptr<Chunk>& chunk = column.chunks[offset / kChunkRows];
     ColumnView view = ViewOf(column, *chunk);

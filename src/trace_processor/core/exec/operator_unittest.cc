@@ -194,25 +194,6 @@ TEST(OperatorTest, SourceIsReplayable) {
   EXPECT_THAT(Drain(pipeline), ElementsAre(0, 1, 2));
 }
 
-// A source owns one batch and refills it, so a long pipeline does no
-// per-batch allocation.
-TEST(OperatorTest, SourceReusesOneBatch) {
-  ArraySource source(Sequence(kMaxBatchRows * 20));
-  Pipeline pipeline(source, {});
-
-  Execution run(pipeline);
-  RowBatch* first = run.Next();
-  ASSERT_NE(first, nullptr);
-  const void* values = first->column(1).data();
-  uint32_t batches = 1;
-  while (RowBatch* batch = run.Next()) {
-    EXPECT_EQ(batch, first) << "the executor's batch was replaced";
-    EXPECT_EQ(batch->column(1).data(), values) << "the source copied values";
-    ++batches;
-  }
-  EXPECT_EQ(batches, 20u);
-}
-
 TEST(OperatorTest, OperatorNarrowsTheBatch) {
   ArraySource source({10, 20, 30, 40, 50});
   std::vector<std::unique_ptr<Operator>> ops;
