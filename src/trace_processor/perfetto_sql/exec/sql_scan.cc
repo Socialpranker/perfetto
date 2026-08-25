@@ -122,8 +122,7 @@ SqlScan::State::~State() = default;
 
 std::unique_ptr<core::exec::OperatorState> SqlScan::MakeState() const {
   auto state = std::make_unique<State>();
-  state->statement.emplace(connection_->PrepareStatement(sql_));
-  state->status = state->statement->status();
+  Prepare(*state);
   state->columns.reserve(names_.size());
   for (uint32_t i = 0; i < names_.size(); ++i) {
     auto column = std::make_shared<Column>();
@@ -140,10 +139,36 @@ std::unique_ptr<core::exec::OperatorState> SqlScan::MakeState() const {
     } else {
       column->strings.resize(kMaxBatchRows);
     }
-    column->validity = core::BitVector::CreateWithSize(kMaxBatchRows);
+    if (types_[i]) {
+      column->validity = core::BitVector::CreateWithSize(kMaxBatchRows);
+    }
     state->columns.push_back(std::move(column));
   }
   return state;
+}
+
+void SqlScan::Prepare(State& state) const {
+  state.statement.emplace(connection_->PrepareStatement(sql_));
+  state.status = state.statement->status();
+  state.done = false;
+  if (!state.status.ok()) {
+    return;
+  }
+  sqlite3_stmt* stmt = state.statement->sqlite_stmt();
+  uint32_t count = static_cast<uint32_t>(sqlite3_column_count(stmt));
+  if (count != names_.size()) {
+    state.status =
+        base::ErrStatus("SQL source: result shape changed between executions");
+    return;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const char* name = sqlite3_column_name(stmt, static_cast<int>(i));
+    if (names_[i] != (name ? name : "")) {
+      state.status = base::ErrStatus(
+          "SQL source: result shape changed between executions");
+      return;
+    }
+  }
 }
 
 base::Status SqlScan::status(const core::exec::OperatorState& state) const {
@@ -151,9 +176,7 @@ base::Status SqlScan::status(const core::exec::OperatorState& state) const {
 }
 
 void SqlScan::Rewind(core::exec::OperatorState& state) const {
-  State& s = state.Cast<State>();
-  sqlite3_reset(s.statement->sqlite_stmt());
-  s.done = false;
+  Prepare(state.Cast<State>());
 }
 
 bool SqlScan::ReadValue(State& s,
@@ -240,7 +263,9 @@ bool SqlScan::GetData(RowBatch& out, core::exec::OperatorState& state) const {
     return false;
   }
   for (const std::shared_ptr<Column>& column : s.columns) {
-    column->validity.ClearAllBits();
+    if (column->validity.size() != 0) {
+      column->validity.ClearAllBits();
+    }
   }
   sqlite3_stmt* stmt = s.statement->sqlite_stmt();
   uint32_t count = 0;

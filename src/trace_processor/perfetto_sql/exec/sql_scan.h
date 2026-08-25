@@ -101,6 +101,7 @@ class SqlScan : public core::exec::Source {
           std::vector<std::string>,
           std::vector<std::optional<core::StorageType>>,
           StringPool*);
+  void Prepare(State&) const;
 
   bool ReadValue(State&, sqlite3_stmt*, uint32_t index, uint32_t row) const;
 

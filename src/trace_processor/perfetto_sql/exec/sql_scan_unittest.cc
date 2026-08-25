@@ -30,6 +30,7 @@
 #include "src/trace_processor/core/exec/row_batch.h"
 #include "src/trace_processor/core/exec/row_cursor.h"
 #include "src/trace_processor/core/exec/row_selection.h"
+#include "src/trace_processor/core/exec/test_utils.h"
 #include "src/trace_processor/core/exec/variant.h"
 #include "src/trace_processor/core/util/bit_vector.h"
 #include "src/trace_processor/perfetto_sql/lineage/column_lineage.h"
@@ -69,20 +70,10 @@ class Execution {
   RowBatch batch_;
 };
 
-// The cells of a column, in row order.
-std::vector<Variant> Read(const RowBatch& batch, uint32_t index) {
-  const ColumnView& column = batch.column(index);
-  const auto* cells = static_cast<const Variant*>(column.data());
-  std::vector<Variant> out;
-  for (uint32_t i = 0; i < batch.size(); ++i) {
-    out.push_back(cells[column.selection().GetIndex(i)]);
-  }
-  return out;
-}
-
 std::vector<int64_t> ReadInts(const RowBatch& batch, uint32_t index) {
   std::vector<int64_t> out;
-  for (const Variant& cell : Read(batch, index)) {
+  for (const Variant& cell :
+       core::exec::test::ReadColumn<Variant>(batch, index)) {
     out.push_back(cell.AsInt64());
   }
   return out;
@@ -147,7 +138,10 @@ TEST_F(SqlScanTest, AQuerysColumnsAreKnownBeforeItsRows) {
 }
 
 TEST_F(SqlScanTest, AQuerysRowsArriveAsABatch) {
-  auto scan = Scan("SELECT 10 AS a UNION ALL SELECT 20 UNION ALL SELECT 30");
+  auto scan = Scan(
+      "SELECT a FROM ("
+      "SELECT 2 AS ord, 20 AS a UNION ALL "
+      "SELECT 3, 30 UNION ALL SELECT 1, 10) ORDER BY ord");
   ASSERT_TRUE(scan.ok()) << scan.status().c_message();
   Execution run(**scan);
 
@@ -162,14 +156,15 @@ TEST_F(SqlScanTest, AQuerysRowsArriveAsABatch) {
 // One column holding three different types and a null, which SQLite allows.
 TEST_F(SqlScanTest, OneColumnCanHoldMoreThanOneType) {
   auto scan = Scan(
-      "SELECT 7 AS a UNION ALL SELECT 1.5 UNION ALL SELECT 'hello' "
-      "UNION ALL SELECT NULL");
+      "SELECT value FROM ("
+      "SELECT 1 AS ord, 7 AS value UNION ALL SELECT 2, 1.5 "
+      "UNION ALL SELECT 3, 'hello' UNION ALL SELECT 4, NULL) ORDER BY ord");
   ASSERT_TRUE(scan.ok()) << scan.status().c_message();
   Execution run(**scan);
 
   RowBatch* batch = run.Next();
   ASSERT_NE(batch, nullptr);
-  std::vector<Variant> cells = Read(*batch, 0);
+  std::vector<Variant> cells = core::exec::test::ReadColumn<Variant>(*batch, 0);
   ASSERT_EQ(cells.size(), 4u);
   EXPECT_EQ(cells[0].AsInt64(), 7);
   EXPECT_EQ(cells[1].AsDouble(), 1.5);
@@ -188,7 +183,7 @@ TEST_F(SqlScanTest, ADeclaredTypeIsNotBelieved) {
 
   RowBatch* batch = run.Next();
   ASSERT_NE(batch, nullptr);
-  std::vector<Variant> cells = Read(*batch, 0);
+  std::vector<Variant> cells = core::exec::test::ReadColumn<Variant>(*batch, 0);
   ASSERT_EQ(cells.size(), 2u);
   EXPECT_EQ(cells[0].AsInt64(), 1);
   EXPECT_EQ(pool_.Get(cells[1].AsString()).ToStdString(), "not a number");
@@ -202,7 +197,7 @@ TEST_F(SqlScanTest, AColumnWhichIsNeverAnythingIsAColumnOfNulls) {
 
   RowBatch* batch = run.Next();
   ASSERT_NE(batch, nullptr);
-  for (const Variant& cell : Read(*batch, 0)) {
+  for (const Variant& cell : core::exec::test::ReadColumn<Variant>(*batch, 0)) {
     EXPECT_EQ(cell.type, Variant::Type::kNull);
   }
 }
@@ -257,6 +252,32 @@ TEST_F(SqlScanTest, ABlobIsReportedRatherThanCarried) {
   EXPECT_THAT(run.status().message(), testing::HasSubstr("blob"));
 }
 
+TEST_F(SqlScanTest, RewindClearsThePreviousExecutionError) {
+  auto scan = Scan("SELECT x'0102' AS a");
+  ASSERT_TRUE(scan.ok()) << scan.status().c_message();
+  Execution run(**scan);
+  ASSERT_EQ(run.Next(), nullptr);
+  ASSERT_FALSE(run.status().ok());
+
+  run.Rewind();
+  EXPECT_TRUE(run.status().ok());
+  EXPECT_EQ(run.Next(), nullptr);
+  EXPECT_FALSE(run.status().ok());
+}
+
+TEST_F(SqlScanTest, EachExecutionValidatesItsResultShape) {
+  Exec("CREATE TABLE t(a INTEGER)");
+  Exec("INSERT INTO t VALUES(1)");
+  auto scan = Scan("SELECT * FROM t");
+  ASSERT_TRUE(scan.ok()) << scan.status().c_message();
+  Exec("ALTER TABLE t ADD COLUMN b TEXT");
+
+  Execution run(**scan);
+  EXPECT_EQ(run.Next(), nullptr);
+  EXPECT_FALSE(run.status().ok());
+  EXPECT_THAT(run.status().message(), testing::HasSubstr("shape changed"));
+}
+
 TEST_F(SqlScanTest, AScanCanBeRunAgain) {
   auto scan = Scan("SELECT 1 AS a UNION ALL SELECT 2");
   ASSERT_TRUE(scan.ok()) << scan.status().c_message();
@@ -277,7 +298,9 @@ TEST_F(SqlScanTest, AScanCanBeRunAgain) {
 }
 
 TEST_F(SqlScanTest, AQueryReachesARowCursor) {
-  auto scan = Scan("SELECT 5 AS a UNION ALL SELECT 6 UNION ALL SELECT 7");
+  auto scan = Scan(
+      "SELECT a FROM (SELECT 2 AS ord, 6 AS a UNION ALL "
+      "SELECT 3, 7 UNION ALL SELECT 1, 5) ORDER BY ord");
   ASSERT_TRUE(scan.ok()) << scan.status().c_message();
 
   RowCursor cursor(**scan);
@@ -314,6 +337,35 @@ TEST_F(SqlScanTest, AColumnFollowedBackToADataframeComesOutFlat) {
   ASSERT_NE(validity, nullptr);
   EXPECT_TRUE(validity->is_set(0));
   EXPECT_FALSE(validity->is_set(1));
+  std::vector<StringPool::Id> names =
+      core::exec::test::ReadColumn<StringPool::Id>(*batch, 1);
+  EXPECT_EQ(pool_.Get(names[0]).ToStdString(), "hello");
+}
+
+TEST_F(SqlScanTest, MixedNumericCompoundResultsStayVariants) {
+  Exec("CREATE TABLE ints(value INTEGER)");
+  Exec("INSERT INTO ints VALUES(7)");
+  Exec("CREATE TABLE doubles(value REAL)");
+  Exec("INSERT INTO doubles VALUES(1.5)");
+  TestCatalog catalog;
+  catalog.Add("ints", {Typed("value", StorageType{Int64{}})});
+  catalog.Add("doubles", {Typed("value", StorageType{Double{}})});
+
+  auto scan = Scan(
+      "SELECT value FROM ("
+      "SELECT 1 AS ord, value FROM ints UNION ALL "
+      "SELECT 2, value FROM doubles) ORDER BY ord",
+      &catalog);
+  ASSERT_TRUE(scan.ok()) << scan.status().c_message();
+  EXPECT_FALSE((*scan)->column_type(0).has_value());
+  Execution run(**scan);
+  RowBatch* batch = run.Next();
+  ASSERT_NE(batch, nullptr);
+  std::vector<Variant> values =
+      core::exec::test::ReadColumn<Variant>(*batch, 0);
+  ASSERT_EQ(values.size(), 2u);
+  EXPECT_EQ(values[0].AsInt64(), 7);
+  EXPECT_EQ(values[1].AsDouble(), 1.5);
 }
 
 // An expression cannot be traced back, so it stays a variant even when the
