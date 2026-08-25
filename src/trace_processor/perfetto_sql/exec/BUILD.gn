@@ -44,6 +44,7 @@ perfetto_unittest_source_set("unittests") {
     "../../containers",
     "../../core/common",
     "../../core/exec",
+    "../../core/exec:test_utils",
     "../../core/util",
     "../../sqlite",
     "../lineage",
