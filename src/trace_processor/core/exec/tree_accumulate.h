@@ -28,9 +28,10 @@
 
 namespace perfetto::trace_processor::core::exec {
 
-// The columns holding the tree structure and the values being summed.
+// The columns holding the tree structure and the values being summed. Node and
+// parent columns must be flat, non-null Uint32 columns; values must be flat
+// Int64. A null value contributes zero.
 struct AccumulateSpec {
-  // Node numbers, as produced by TreeNumberNodes.
   uint32_t node_column = 0;
   uint32_t parent_column = 1;
   uint32_t value_column = 2;
@@ -43,6 +44,9 @@ class AccumulateState : public OperatorState {
   ~AccumulateState() override;
 
   std::vector<int64_t> by_node;
+  std::vector<uint32_t> node_scratch;
+  std::vector<uint32_t> parent_scratch;
+  std::vector<int64_t> value_scratch;
   std::shared_ptr<FlexVector<int64_t>> totals =
       std::make_shared<FlexVector<int64_t>>();
   base::Status status = base::OkStatus();
@@ -50,10 +54,9 @@ class AccumulateState : public OperatorState {
 
 // Sums each node's value with the values of everything below it.
 //
-// Requires the rows child first, so that all of a node's descendants have
-// already been seen by the time the node arrives and its total is final
-// immediately. Nothing is buffered: rows are emitted as they arrive, and the
-// only thing carried between batches is one running total per node.
+// Requires rows child first, so every descendant has been seen when the node
+// arrives. Input columns are preserved and one flat Int64 total column is
+// appended.
 class TreeAccumulateUp : public Operator {
  public:
   explicit TreeAccumulateUp(AccumulateSpec);
@@ -70,8 +73,9 @@ class TreeAccumulateUp : public Operator {
 
 // Sums each node's value with the values of everything above it.
 //
-// The mirror of TreeAccumulateUp: it requires the rows parent first, so that a
-// node's ancestors have already been totalled by the time it arrives.
+// Requires rows parent first, so every ancestor has been totalled when the node
+// arrives. Input columns are preserved and one flat Int64 total column is
+// appended.
 class TreeAccumulateDown : public Operator {
  public:
   explicit TreeAccumulateDown(AccumulateSpec);

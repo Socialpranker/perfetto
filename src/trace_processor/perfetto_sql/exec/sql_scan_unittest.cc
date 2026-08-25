@@ -330,11 +330,11 @@ TEST_F(SqlScanTest, AQueryReachesTheTreeOperators) {
 
   std::vector<std::unique_ptr<core::exec::Operator>> ops;
   ops.push_back(std::make_unique<core::exec::AssertType>(
-      0, core::StorageType{core::Int64{}}, "id"));
+      0, core::exec::AssertTypeTarget{core::Int64{}}, "id"));
   ops.push_back(std::make_unique<core::exec::AssertType>(
-      1, core::StorageType{core::Int64{}}, "parent_id"));
+      1, core::exec::AssertTypeTarget{core::Int64{}}, "parent_id"));
   ops.push_back(std::make_unique<core::exec::AssertType>(
-      2, core::StorageType{core::Int64{}}, "self"));
+      2, core::exec::AssertTypeTarget{core::Int64{}}, "self"));
   ops.push_back(std::make_unique<core::exec::TreeNumberNodes>(0, 1));
   core::exec::Pipeline typed(**scan, std::move(ops));
   core::exec::TreeChildFirst order(typed, 3, 4);
@@ -347,13 +347,11 @@ TEST_F(SqlScanTest, AQueryReachesTheTreeOperators) {
   RowBatch batch;
   std::vector<int64_t> totals(4, 0);
   while (folded.GetData(batch, *state)) {
+    std::vector<int64_t> ids = core::exec::test::ReadColumn<int64_t>(batch, 0);
+    std::vector<int64_t> values =
+        core::exec::test::ReadColumn<int64_t>(batch, 5);
     for (uint32_t row = 0; row < batch.size(); ++row) {
-      const ColumnView& ids = batch.column(0);
-      const ColumnView& out = batch.column(5);
-      auto id = static_cast<const int64_t*>(
-          ids.data())[ids.selection().GetIndex(row)];
-      totals[static_cast<size_t>(id)] = static_cast<const int64_t*>(
-          out.data())[out.selection().GetIndex(row)];
+      totals[static_cast<size_t>(ids[row])] = values[row];
     }
   }
   ASSERT_TRUE(folded.status(*state).ok()) << folded.status(*state).message();
@@ -369,7 +367,7 @@ TEST_F(SqlScanTest, AColumnWhichIsNotWhatWasAssertedIsReported) {
 
   std::vector<std::unique_ptr<core::exec::Operator>> ops;
   ops.push_back(std::make_unique<core::exec::AssertType>(
-      0, core::StorageType{core::Int64{}}, "i"));
+      0, core::exec::AssertTypeTarget{core::Int64{}}, "i"));
   core::exec::Pipeline typed(**scan, std::move(ops));
 
   Execution run(typed);

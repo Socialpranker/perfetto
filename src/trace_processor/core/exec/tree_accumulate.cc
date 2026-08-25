@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "perfetto/base/status.h"
+#include "perfetto/ext/base/utils.h"
 #include "src/trace_processor/core/common/storage_types.h"
 #include "src/trace_processor/core/exec/column_view.h"
 #include "src/trace_processor/core/exec/operator.h"
@@ -50,6 +51,49 @@ const T* Flatten(const ColumnView& column,
     out[i] = data[rows[i]];
   }
   return out;
+}
+
+const int64_t* FlattenValues(const ColumnView& column,
+                             uint32_t count,
+                             std::vector<int64_t>* scratch) {
+  const auto* data = static_cast<const int64_t*>(column.data());
+  RowSelection selection = column.selection();
+  const BitVector* validity = column.validity();
+  if (selection.is_range() && !validity) {
+    return data + selection.offset();
+  }
+  scratch->resize(count);
+  for (uint32_t row = 0; row < count; ++row) {
+    uint32_t index = selection.GetIndex(row);
+    (*scratch)[row] = validity && !validity->is_set(index) ? 0 : data[index];
+  }
+  return scratch->data();
+}
+
+base::Status Validate(const RowBatch& in, AccumulateSpec spec) {
+  const ColumnView& node = in.column(spec.node_column);
+  const ColumnView& parent = in.column(spec.parent_column);
+  const ColumnView& value = in.column(spec.value_column);
+  bool nodes_ok = node.kind() == ColumnView::Kind::kFlat &&
+                  node.type().Is<Uint32>() && node.validity() == nullptr &&
+                  parent.kind() == ColumnView::Kind::kFlat &&
+                  parent.type().Is<Uint32>() && parent.validity() == nullptr;
+  if (!nodes_ok) {
+    return base::ErrStatus(
+        "TREE ACCUMULATE: node columns must be non-null Uint32");
+  }
+  if (value.kind() != ColumnView::Kind::kFlat || !value.type().Is<Int64>()) {
+    return base::ErrStatus("TREE ACCUMULATE: values must be Int64");
+  }
+  return base::OkStatus();
+}
+
+bool Add(AccumulateState& state, int64_t a, int64_t b, int64_t* out) {
+  if (base::CheckedAdd(a, b, out)) {
+    return true;
+  }
+  state.status = base::ErrStatus("TREE ACCUMULATE: integer overflow");
+  return false;
 }
 
 void Grow(std::vector<int64_t>* by_node, uint32_t node) {
@@ -86,10 +130,14 @@ std::unique_ptr<OperatorState> TreeAccumulateDown::MakeState() const {
 }
 
 void TreeAccumulateUp::Rewind(OperatorState& state) const {
-  state.Cast<AccumulateState>().by_node.clear();
+  AccumulateState& s = state.Cast<AccumulateState>();
+  s.by_node.clear();
+  s.status = base::OkStatus();
 }
 void TreeAccumulateDown::Rewind(OperatorState& state) const {
-  state.Cast<AccumulateState>().by_node.clear();
+  AccumulateState& s = state.Cast<AccumulateState>();
+  s.by_node.clear();
+  s.status = base::OkStatus();
 }
 
 base::Status TreeAccumulateUp::status(const OperatorState& state) const {
@@ -103,16 +151,17 @@ OpResult TreeAccumulateUp::Execute(const RowBatch& in,
                                    RowBatch& out,
                                    OperatorState& state) const {
   AccumulateState& s = state.Cast<AccumulateState>();
+  s.status = Validate(in, spec_);
+  if (!s.status.ok()) {
+    return OpResult::kError;
+  }
   uint32_t count = in.size();
-  std::vector<uint32_t> node_scratch;
-  std::vector<uint32_t> parent_scratch;
-  std::vector<int64_t> value_scratch;
   const uint32_t* nodes =
-      Flatten<uint32_t>(in.column(spec_.node_column), count, &node_scratch);
-  const uint32_t* parents =
-      Flatten<uint32_t>(in.column(spec_.parent_column), count, &parent_scratch);
+      Flatten<uint32_t>(in.column(spec_.node_column), count, &s.node_scratch);
+  const uint32_t* parents = Flatten<uint32_t>(in.column(spec_.parent_column),
+                                              count, &s.parent_scratch);
   const int64_t* values =
-      Flatten<int64_t>(in.column(spec_.value_column), count, &value_scratch);
+      FlattenValues(in.column(spec_.value_column), count, &s.value_scratch);
 
   s.totals->resize(count);
   int64_t* totals = s.totals->data();
@@ -121,12 +170,17 @@ OpResult TreeAccumulateUp::Execute(const RowBatch& in,
     Grow(&s.by_node, node);
     // Every descendant has already been seen and added its value here, so the
     // total is final the moment the node arrives.
-    int64_t total = values[row] + s.by_node[node];
+    int64_t total;
+    if (!Add(s, values[row], s.by_node[node], &total)) {
+      return OpResult::kError;
+    }
     totals[row] = total;
     uint32_t parent = parents[row];
     if (parent != kNoNode) {
       Grow(&s.by_node, parent);
-      s.by_node[parent] += total;
+      if (!Add(s, s.by_node[parent], total, &s.by_node[parent])) {
+        return OpResult::kError;
+      }
     }
   }
   Emit(in, out, s.totals);
@@ -137,16 +191,17 @@ OpResult TreeAccumulateDown::Execute(const RowBatch& in,
                                      RowBatch& out,
                                      OperatorState& state) const {
   AccumulateState& s = state.Cast<AccumulateState>();
+  s.status = Validate(in, spec_);
+  if (!s.status.ok()) {
+    return OpResult::kError;
+  }
   uint32_t count = in.size();
-  std::vector<uint32_t> node_scratch;
-  std::vector<uint32_t> parent_scratch;
-  std::vector<int64_t> value_scratch;
   const uint32_t* nodes =
-      Flatten<uint32_t>(in.column(spec_.node_column), count, &node_scratch);
-  const uint32_t* parents =
-      Flatten<uint32_t>(in.column(spec_.parent_column), count, &parent_scratch);
+      Flatten<uint32_t>(in.column(spec_.node_column), count, &s.node_scratch);
+  const uint32_t* parents = Flatten<uint32_t>(in.column(spec_.parent_column),
+                                              count, &s.parent_scratch);
   const int64_t* values =
-      Flatten<int64_t>(in.column(spec_.value_column), count, &value_scratch);
+      FlattenValues(in.column(spec_.value_column), count, &s.value_scratch);
 
   s.totals->resize(count);
   int64_t* totals = s.totals->data();
@@ -157,7 +212,10 @@ OpResult TreeAccumulateDown::Execute(const RowBatch& in,
       Grow(&s.by_node, parent);
       above = s.by_node[parent];
     }
-    int64_t total = values[row] + above;
+    int64_t total;
+    if (!Add(s, values[row], above, &total)) {
+      return OpResult::kError;
+    }
     uint32_t node = nodes[row];
     Grow(&s.by_node, node);
     s.by_node[node] = total;

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -30,6 +31,7 @@
 #include "src/trace_processor/core/exec/pipeline.h"
 #include "src/trace_processor/core/exec/row_batch.h"
 #include "src/trace_processor/core/exec/row_selection.h"
+#include "src/trace_processor/core/exec/test_utils.h"
 #include "src/trace_processor/core/exec/tree_number_nodes.h"
 #include "src/trace_processor/core/exec/tree_order.h"
 #include "src/trace_processor/core/util/bit_vector.h"
@@ -142,12 +144,6 @@ std::vector<int64_t> ReferenceDown(const std::vector<int64_t>& parent,
   return totals;
 }
 
-int64_t Read(const RowBatch& batch, uint32_t column, uint32_t row) {
-  const ColumnView& view = batch.column(column);
-  return static_cast<const int64_t*>(
-      view.data())[view.selection().GetIndex(row)];
-}
-
 // Runs the whole pipeline, returning the totals by id and the number of
 // batches produced.
 struct Result {
@@ -188,9 +184,10 @@ Result Accumulate(const std::vector<int64_t>& parent,
   result.totals.assign(parent.size(), 0);
   while (pipeline.GetData(batch, *state)) {
     ++result.batches;
+    std::vector<int64_t> ids = test::ReadColumn<int64_t>(batch, 0);
+    std::vector<int64_t> totals = test::ReadColumn<int64_t>(batch, 5);
     for (uint32_t row = 0; row < batch.size(); ++row) {
-      auto id = Read(batch, 0, row);
-      result.totals[static_cast<size_t>(id)] = Read(batch, 5, row);
+      result.totals[static_cast<size_t>(ids[row])] = totals[row];
     }
   }
   EXPECT_TRUE(pipeline.status(*state).ok())
@@ -214,6 +211,79 @@ TEST(TreeAccumulateTest, UpIsEverythingBelowANode) {
 TEST(TreeAccumulateTest, DownIsEverythingAboveANode) {
   EXPECT_THAT(Accumulate(Parents(), Values(), 8, /*up=*/false).totals,
               ElementsAre(1, 3, 4, 7));
+}
+
+TEST(TreeAccumulateTest, UpReportsIntegerOverflow) {
+  std::vector<uint32_t> nodes = {1, 0};
+  std::vector<uint32_t> parents = {0, kNoNode};
+  std::vector<int64_t> values = {std::numeric_limits<int64_t>::max(), 1};
+  RowBatch in;
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, nodes.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, parents.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, values.data()));
+  in.SetCardinality(2);
+
+  TreeAccumulateUp op({0, 1, 2});
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  RowBatch out;
+  EXPECT_EQ(op.Execute(in, out, *state), OpResult::kError);
+  EXPECT_THAT(op.status(*state).message(), testing::HasSubstr("overflow"));
+  op.Rewind(*state);
+  EXPECT_TRUE(op.status(*state).ok());
+}
+
+TEST(TreeAccumulateTest, DownReportsIntegerOverflow) {
+  std::vector<uint32_t> nodes = {0, 1};
+  std::vector<uint32_t> parents = {kNoNode, 0};
+  std::vector<int64_t> values = {std::numeric_limits<int64_t>::max(), 1};
+  RowBatch in;
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, nodes.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, parents.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, values.data()));
+  in.SetCardinality(2);
+
+  TreeAccumulateDown op({0, 1, 2});
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  RowBatch out;
+  EXPECT_EQ(op.Execute(in, out, *state), OpResult::kError);
+  EXPECT_THAT(op.status(*state).message(), testing::HasSubstr("overflow"));
+}
+
+TEST(TreeAccumulateTest, NullValuesContributeZero) {
+  std::vector<uint32_t> nodes = {0, 1};
+  std::vector<uint32_t> parents = {kNoNode, 0};
+  std::vector<int64_t> values = {123, 7};
+  BitVector validity = BitVector::CreateWithSize(2);
+  validity.set(1);
+  RowBatch in;
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, nodes.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, parents.data()));
+  in.AddColumn(
+      ColumnView::Reference(StorageType{Int64{}}, values.data(), &validity));
+  in.SetCardinality(2);
+
+  TreeAccumulateDown op({0, 1, 2});
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  RowBatch out;
+  ASSERT_EQ(op.Execute(in, out, *state), OpResult::kNeedMoreInput);
+  EXPECT_THAT(test::ReadColumn<int64_t>(out, 3), ElementsAre(0, 7));
+}
+
+TEST(TreeAccumulateTest, WrongColumnTypesAreReported) {
+  std::vector<int64_t> nodes = {0};
+  std::vector<uint32_t> parents = {kNoNode};
+  std::vector<int64_t> values = {1};
+  RowBatch in;
+  in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, nodes.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Uint32{}}, parents.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, values.data()));
+  in.SetCardinality(1);
+
+  TreeAccumulateDown op({0, 1, 2});
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  RowBatch out;
+  EXPECT_EQ(op.Execute(in, out, *state), OpResult::kError);
+  EXPECT_THAT(op.status(*state).message(), testing::HasSubstr("Uint32"));
 }
 
 // Nothing is buffered when the rows already arrive the right way round: one
@@ -300,8 +370,10 @@ TEST(TreeAccumulateTest, RunningAgainStartsOver) {
   auto drain = [&] {
     std::vector<int64_t> totals(4, 0);
     while (pipeline.GetData(batch, *state)) {
+      std::vector<int64_t> ids = test::ReadColumn<int64_t>(batch, 0);
+      std::vector<int64_t> values = test::ReadColumn<int64_t>(batch, 5);
       for (uint32_t row = 0; row < batch.size(); ++row) {
-        totals[static_cast<size_t>(Read(batch, 0, row))] = Read(batch, 5, row);
+        totals[static_cast<size_t>(ids[row])] = values[row];
       }
     }
     return totals;
