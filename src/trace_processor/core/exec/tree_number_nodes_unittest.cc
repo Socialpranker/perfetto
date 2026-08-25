@@ -26,6 +26,7 @@
 #include "src/trace_processor/core/exec/operator.h"
 #include "src/trace_processor/core/exec/row_batch.h"
 #include "src/trace_processor/core/exec/row_selection.h"
+#include "src/trace_processor/core/exec/test_utils.h"
 #include "src/trace_processor/core/exec/variant.h"
 #include "src/trace_processor/core/util/bit_vector.h"
 #include "test/gtest_and_gmock.h"
@@ -34,16 +35,6 @@ namespace perfetto::trace_processor::core::exec {
 namespace {
 
 using ::testing::ElementsAre;
-
-std::vector<uint32_t> ReadNodes(const RowBatch& batch, uint32_t column) {
-  const ColumnView& view = batch.column(column);
-  const auto* data = static_cast<const uint32_t*>(view.data());
-  std::vector<uint32_t> out;
-  for (uint32_t i = 0; i < batch.size(); ++i) {
-    out.push_back(data[view.selection().GetIndex(i)]);
-  }
-  return out;
-}
 
 // Runs one batch of ids and parent ids, of any type, through the operator.
 template <typename T>
@@ -85,8 +76,9 @@ TEST(TreeNumberNodesTest, IdsWhichAreAlreadyNodeNumbersAreLeftAlone) {
                         {false, true, true});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
 
-  EXPECT_THAT(ReadNodes(run.out, 2), ElementsAre(0u, 1u, 2u));
-  EXPECT_THAT(ReadNodes(run.out, 3), ElementsAre(kNoNode, 0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 2), ElementsAre(0u, 1u, 2u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 3),
+              ElementsAre(kNoNode, 0u, 1u));
 }
 
 // A filtered relation's ids are scattered over a wide range; numbering them
@@ -96,8 +88,9 @@ TEST(TreeNumberNodesTest, AScatteringOfIdsIsNumberedDensely) {
                         {false, true, true});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
 
-  EXPECT_THAT(ReadNodes(run.out, 2), ElementsAre(0u, 1u, 2u));
-  EXPECT_THAT(ReadNodes(run.out, 3), ElementsAre(kNoNode, 0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 2), ElementsAre(0u, 1u, 2u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 3),
+              ElementsAre(kNoNode, 0u, 1u));
 }
 
 // A parent not yet seen is numbered on sight, so a child-first stream works.
@@ -106,8 +99,8 @@ TEST(TreeNumberNodesTest, AParentNotYetSeenIsNumberedAnyway) {
                         {true, true, false});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
 
-  std::vector<uint32_t> nodes = ReadNodes(run.out, 2);
-  std::vector<uint32_t> parents = ReadNodes(run.out, 3);
+  std::vector<uint32_t> nodes = test::ReadColumn<uint32_t>(run.out, 2);
+  std::vector<uint32_t> parents = test::ReadColumn<uint32_t>(run.out, 3);
   EXPECT_EQ(parents[0], nodes[1]);
   EXPECT_EQ(parents[1], nodes[2]);
   EXPECT_EQ(parents[2], kNoNode);
@@ -116,8 +109,8 @@ TEST(TreeNumberNodesTest, AParentNotYetSeenIsNumberedAnyway) {
 TEST(TreeNumberNodesTest, AnIdOfAnyWidthIsNamed) {
   Numbered<uint32_t> run(StorageType{Uint32{}}, {7, 8}, {0, 7}, {false, true});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
-  EXPECT_THAT(ReadNodes(run.out, 2), ElementsAre(0u, 1u));
-  EXPECT_THAT(ReadNodes(run.out, 3), ElementsAre(kNoNode, 0u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 2), ElementsAre(0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 3), ElementsAre(kNoNode, 0u));
 }
 
 TEST(TreeNumberNodesTest, AStringIsAnIdLikeAnythingElse) {
@@ -127,8 +120,8 @@ TEST(TreeNumberNodesTest, AStringIsAnIdLikeAnythingElse) {
   Numbered<StringPool::Id> run(StorageType{String{}}, {a, b}, {a, a},
                                {false, true});
   ASSERT_EQ(run.Execute(), OpResult::kNeedMoreInput);
-  EXPECT_THAT(ReadNodes(run.out, 2), ElementsAre(0u, 1u));
-  EXPECT_THAT(ReadNodes(run.out, 3), ElementsAre(kNoNode, 0u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 2), ElementsAre(0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(run.out, 3), ElementsAre(kNoNode, 0u));
 }
 
 // An Id column has no storage: its value is the row it sits at.
@@ -147,7 +140,7 @@ TEST(TreeNumberNodesTest, AnIdColumnIsTheRowItSitsAt) {
 
   RowBatch out;
   ASSERT_EQ(op.Execute(in, out, *state), OpResult::kNeedMoreInput);
-  EXPECT_THAT(ReadNodes(out, 2), ElementsAre(0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 2), ElementsAre(0u, 1u));
 }
 
 TEST(TreeNumberNodesTest, AVariantIdIsNamed) {
@@ -163,8 +156,33 @@ TEST(TreeNumberNodesTest, AVariantIdIsNamed) {
 
   RowBatch out;
   ASSERT_EQ(op.Execute(in, out, *state), OpResult::kNeedMoreInput);
-  EXPECT_THAT(ReadNodes(out, 2), ElementsAre(0u, 1u));
-  EXPECT_THAT(ReadNodes(out, 3), ElementsAre(kNoNode, 0u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 2), ElementsAre(0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 3), ElementsAre(kNoNode, 0u));
+}
+
+TEST(TreeNumberNodesTest, VariantStringsAndIntegersHaveSeparateKeys) {
+  StringPool pool;
+  StringPool::Id string = pool.InternString("id");
+  TreeNumberNodes op(0, 1);
+  std::unique_ptr<OperatorState> state = op.MakeState();
+  std::vector<Variant> ids = {Variant::Int64(string.raw_id()),
+                              Variant::String(string)};
+  std::vector<Variant> parents = {Variant::Null(), Variant::Null()};
+  RowBatch in;
+  in.AddColumn(ColumnView::Variants(ids.data()));
+  in.AddColumn(ColumnView::Variants(parents.data()));
+  in.SetCardinality(2);
+
+  RowBatch out;
+  ASSERT_EQ(op.Execute(in, out, *state), OpResult::kNeedMoreInput);
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 2), ElementsAre(0u, 1u));
+}
+
+TEST(TreeNumberNodesTest, DuplicateIdsAreReported) {
+  Numbered<int64_t> run(StorageType{Int64{}}, {1, 1}, {0, 0}, {false, false});
+  EXPECT_EQ(run.Execute(), OpResult::kError);
+  EXPECT_THAT(run.op.status(*run.state).message(),
+              testing::HasSubstr("same id"));
 }
 
 TEST(TreeNumberNodesTest, ARowWithNoIdIsReported) {
@@ -185,28 +203,30 @@ TEST(TreeNumberNodesTest, ARowWithNoIdIsReported) {
   EXPECT_THAT(op.status(*state).message(), testing::HasSubstr("no id"));
 }
 
-// A node keeps the number it was first given across every later batch.
+// A parent keeps the number it was first given across later batches.
 TEST(TreeNumberNodesTest, NumberingIsStableAcrossBatches) {
   TreeNumberNodes op(0, 1);
   std::unique_ptr<OperatorState> state = op.MakeState();
-  std::vector<int64_t> ids = {40, 50, 40};
+  std::vector<int64_t> ids = {40, 50, 60};
+  std::vector<int64_t> parents = {40, 40, 40};
   RowBatch in;
   RowBatch out;
   in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, ids.data()));
-  in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, ids.data()));
+  in.AddColumn(ColumnView::Reference(StorageType{Int64{}}, parents.data()));
 
   in.Compose(RowSelection::Range(0), 2);
   in.SetCardinality(2);
   ASSERT_EQ(op.Execute(in, out, *state), OpResult::kNeedMoreInput);
-  EXPECT_THAT(ReadNodes(out, 2), ElementsAre(0u, 1u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 2), ElementsAre(0u, 1u));
 
   RowBatch again;
   again.AddColumn(ColumnView::Reference(StorageType{Int64{}}, ids.data()));
-  again.AddColumn(ColumnView::Reference(StorageType{Int64{}}, ids.data()));
+  again.AddColumn(ColumnView::Reference(StorageType{Int64{}}, parents.data()));
   again.Compose(RowSelection::Range(2), 1);
   again.SetCardinality(1);
   ASSERT_EQ(op.Execute(again, out, *state), OpResult::kNeedMoreInput);
-  EXPECT_THAT(ReadNodes(out, 2), ElementsAre(0u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 2), ElementsAre(2u));
+  EXPECT_THAT(test::ReadColumn<uint32_t>(out, 3), ElementsAre(0u));
 }
 
 }  // namespace

@@ -32,8 +32,8 @@ namespace perfetto::trace_processor::core::exec {
 // The parent of a root row.
 inline constexpr uint32_t kNoNode = std::numeric_limits<uint32_t>::max();
 
-// Replaces a relation's ids and parent ids with node numbers, handed out
-// densely from zero in order of first sighting.
+// Appends node and parent-node Uint32 columns to a relation. Numbers are handed
+// out densely from zero in order of first sighting.
 //
 // This is the only operator which has to know how a relation stores its ids:
 // they can be of any width, and a filtered relation's ids are scattered over a
@@ -51,6 +51,19 @@ class TreeNumberNodes : public Operator {
   base::Status status(const OperatorState&) const override;
 
  private:
+  struct Key {
+    int64_t value;
+    bool string;
+
+    bool operator==(const Key& other) const {
+      return value == other.value && string == other.string;
+    }
+  };
+  struct KeyHash {
+    uint64_t operator()(const Key& key) const {
+      return base::MurmurHashCombine(key.value, key.string);
+    }
+  };
   struct Numbers {
     std::vector<uint32_t> nodes;
     std::vector<uint32_t> parents;
@@ -61,15 +74,18 @@ class TreeNumberNodes : public Operator {
     // so the map stays empty.
     bool dense = true;
     uint32_t numbered = 0;
-    base::FlatHashMap<int64_t, uint32_t> numbers;
+    base::FlatHashMap<Key, uint32_t, KeyHash> numbers;
+    std::vector<uint8_t> has_row;
     std::shared_ptr<Numbers> out = std::make_shared<Numbers>();
     std::vector<int64_t> id_keys;
     std::vector<int64_t> parent_keys;
+    std::vector<uint8_t> id_strings;
+    std::vector<uint8_t> parent_strings;
     std::vector<uint8_t> parent_null;
     base::Status status = base::OkStatus();
   };
 
-  uint32_t Number(State&, int64_t key) const;
+  uint32_t Number(State&, Key) const;
 
   uint32_t id_column_;
   uint32_t parent_column_;

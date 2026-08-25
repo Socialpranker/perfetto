@@ -84,7 +84,9 @@ void SequenceKeys(const ColumnView& column,
 base::Status ReadKeys(const ColumnView& column,
                       uint32_t count,
                       std::vector<int64_t>* keys,
+                      std::vector<uint8_t>* strings,
                       std::vector<uint8_t>* nulls) {
+  strings->assign(count, 0);
   if (nulls) {
     nulls->assign(count, 0);
   }
@@ -100,6 +102,7 @@ base::Status ReadKeys(const ColumnView& column,
           break;
         case Variant::Type::kString:
           (*keys)[i] = cell.AsString().raw_id();
+          (*strings)[i] = 1;
           break;
         case Variant::Type::kDouble:
           return base::ErrStatus("TREE NUMBER NODES: an id cannot be a float");
@@ -126,6 +129,7 @@ base::Status ReadKeys(const ColumnView& column,
     KeysOf<int64_t>(column, count, keys);
   } else if (type.Is<String>()) {
     KeysOf<StringPool::Id>(column, count, keys);
+    strings->assign(count, 1);
   } else {
     return base::ErrStatus("TREE NUMBER NODES: an id cannot be a float");
   }
@@ -166,6 +170,7 @@ void TreeNumberNodes::Rewind(OperatorState& state) const {
   s.dense = true;
   s.numbered = 0;
   s.numbers.Clear();
+  s.has_row.clear();
   s.status = base::OkStatus();
 }
 
@@ -173,23 +178,35 @@ base::Status TreeNumberNodes::status(const OperatorState& state) const {
   return state.Cast<const State>().status;
 }
 
-uint32_t TreeNumberNodes::Number(State& s, int64_t key) const {
+uint32_t TreeNumberNodes::Number(State& s, Key key) const {
   if (s.dense) {
-    // Every id below `numbered` was handed out in order.
-    if (key >= 0 && static_cast<uint64_t>(key) < s.numbered) {
-      return static_cast<uint32_t>(key);
-    }
-    if (key == static_cast<int64_t>(s.numbered)) {
-      return s.numbered++;
+    if (!key.string) {
+      // Every integer id below `numbered` was handed out in order.
+      if (key.value >= 0 && static_cast<uint64_t>(key.value) < s.numbered) {
+        return static_cast<uint32_t>(key.value);
+      }
+      if (key.value == static_cast<int64_t>(s.numbered)) {
+        if (s.numbered == kNoNode) {
+          s.status = base::ErrStatus(
+              "TREE NUMBER NODES: the relation has too many nodes");
+          return kNoNode;
+        }
+        return s.numbered++;
+      }
     }
     // Not dense after all, so record the numbering identity had implied.
     s.dense = false;
     for (uint32_t n = 0; n < s.numbered; ++n) {
-      s.numbers.Insert(static_cast<int64_t>(n), n);
+      s.numbers.Insert(Key{static_cast<int64_t>(n), false}, n);
     }
   }
   if (uint32_t* existing = s.numbers.Find(key); existing) {
     return *existing;
+  }
+  if (s.numbered == kNoNode) {
+    s.status =
+        base::ErrStatus("TREE NUMBER NODES: the relation has too many nodes");
+    return kNoNode;
   }
   uint32_t assigned = s.numbered++;
   s.numbers.Insert(key, assigned);
@@ -201,11 +218,11 @@ OpResult TreeNumberNodes::Execute(const RowBatch& in,
                                   OperatorState& state) const {
   State& s = state.Cast<State>();
   uint32_t count = in.size();
-  base::Status status =
-      ReadKeys(in.column(id_column_), count, &s.id_keys, nullptr);
+  base::Status status = ReadKeys(in.column(id_column_), count, &s.id_keys,
+                                 &s.id_strings, nullptr);
   if (status.ok()) {
     status = ReadKeys(in.column(parent_column_), count, &s.parent_keys,
-                      &s.parent_null);
+                      &s.parent_strings, &s.parent_null);
   }
   if (!status.ok()) {
     s.status = status;
@@ -215,9 +232,29 @@ OpResult TreeNumberNodes::Execute(const RowBatch& in,
   s.out->nodes.resize(count);
   s.out->parents.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
-    s.out->nodes[i] = Number(s, s.id_keys[i]);
+    uint32_t node = Number(s, Key{s.id_keys[i], s.id_strings[i] != 0});
+    if (!s.status.ok()) {
+      return OpResult::kError;
+    }
+    if (s.has_row.size() <= node) {
+      s.has_row.resize(node + 1);
+    }
+    if (s.has_row[node]) {
+      s.status = base::ErrStatus(
+          "TREE NUMBER NODES: more than one row has the same id");
+      return OpResult::kError;
+    }
+    s.has_row[node] = 1;
+    s.out->nodes[i] = node;
+    if (s.parent_null[i]) {
+      s.out->parents[i] = kNoNode;
+      continue;
+    }
     s.out->parents[i] =
-        s.parent_null[i] ? kNoNode : Number(s, s.parent_keys[i]);
+        Number(s, Key{s.parent_keys[i], s.parent_strings[i] != 0});
+    if (!s.status.ok()) {
+      return OpResult::kError;
+    }
   }
 
   out.CopyFrom(in);
