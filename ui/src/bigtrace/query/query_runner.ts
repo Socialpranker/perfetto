@@ -27,6 +27,7 @@ import {
   toExperimentFilterSpec,
 } from './bigtrace_query_client';
 import {forwardAbort} from './abort_utils';
+import {ensureTableTarget} from '../pages/table_target_dialogs';
 import {
   isoToEpochMs,
   snapshotSettingsToFilters,
@@ -62,6 +63,10 @@ export class QueryRunner {
   // Run `query` on `tab`. Aborts any in-flight query on the tab first.
   async run(tab: BigTraceEditorTab, query: string): Promise<void> {
     if (!query) return;
+
+    // Settle where the results are going before the tab is touched, so
+    // backing out of the prompt leaves no half-started run behind.
+    if (!(await ensureTableTarget(tab))) return;
 
     tab.activeRequest?.abort();
 
@@ -127,6 +132,9 @@ export class QueryRunner {
       traceOrderBy,
       traceLimit: tab.traceLimit,
       experimentFilter: toExperimentFilterSpec(tab.experimentFilter),
+      // Only a persistent run makes a table to name or expire.
+      tableName: tab.materialize ? tab.tableName : undefined,
+      tableTtlDays: tab.materialize ? tab.tableTtlDays : undefined,
     };
 
     const wallStartMs = performance.now();

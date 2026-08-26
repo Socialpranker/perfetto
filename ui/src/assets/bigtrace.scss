@@ -1131,6 +1131,119 @@ pre.pf-bt-history-item-query--standalone {
   }
 }
 
+// Two classes deep to outrank the widget's own `--fit-content`, which unsets
+// max-width; content still decides the size, it just can't leave the screen.
+.pf-popup.pf-bt-preferences-popup {
+  max-width: calc(100vw - 16px);
+}
+
+// Delete confirm: date, query, and the two answers, each on its own line.
+.pf-bt-delete-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  max-width: min(40rem, 90vw);
+
+  // What a silenced question will do, said rather than asked.
+  &__note {
+    color: var(--pf-color-text-muted);
+  }
+}
+
+// The table a finished run wrote to, in the status bar. Names can be long;
+// the counters beside it matter more, so this is what gives way.
+.pf-bt-status-bar-stat--table {
+  min-width: 0;
+
+  .pf-bt-status-bar-table-link,
+  .pf-bt-status-bar-stat-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 18rem;
+    display: inline-block;
+    vertical-align: bottom;
+  }
+
+  // Same treatment the History row gives the same link.
+  .pf-bt-status-bar-table-link {
+    color: var(--pf-color-primary);
+    text-decoration: underline;
+  }
+}
+
+// Preferences popover: every prompt that can be silenced, and the way back.
+.pf-bt-preferences-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 26rem;
+
+  &__title {
+    font-weight: 600;
+  }
+
+  &__section {
+    color: var(--pf-color-text-muted);
+    font-size: var(--pf-font-size-s);
+    margin-top: 4px;
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  // The label takes the slack so the Ask / Don't ask controls line up.
+  &__label {
+    flex: 1;
+    min-width: 0;
+  }
+
+  // What silencing this prompt actually does, when it does more than stop
+  // asking.
+  &__detail {
+    color: var(--pf-color-text-muted);
+    font-size: var(--pf-font-size-s);
+  }
+}
+
+// The table-name prompt: a field, what the backend makes of it, and the two
+// answers that decide whether it is asked again.
+.pf-bt-table-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: min(32rem, 80vw);
+  // A modal is as wide as its widest dialog; prose in here still wants a
+  // readable line rather than the whole of it.
+  max-width: min(40rem, 90vw);
+
+  label {
+    color: var(--pf-color-text-muted);
+    font-size: var(--pf-font-size-s);
+  }
+
+  &__hint {
+    color: var(--pf-color-text-muted);
+    font-size: var(--pf-font-size-s);
+    // Its own line, so a long resolved name can't shuffle the field above it.
+    overflow-wrap: anywhere;
+
+    &--warn {
+      color: var(--pf-color-warning);
+    }
+  }
+
+  &__ttl {
+    color: var(--pf-color-text-muted);
+    font-size: var(--pf-font-size-s);
+    margin-bottom: 4px;
+  }
+}
+
 // Query-settings modal (gear in the run toolbar): the settings form without
 // the page chrome — the modal provides the frame and the scrolling.
 .pf-bt-query-settings-modal {

@@ -64,6 +64,16 @@ export interface SettingsBindings {
   readonly setTraceLimit: (limit: number) => void;
   // The experiment/control pair and arm the query runs over; undefined = no
   // experiment filtering. Set from the trace grid's experiment picker.
+  // How long the table a persistent run writes lives, in days.
+  readonly getTableTtlDays: () => number;
+  readonly setTableTtlDays: (days: number) => void;
+  // The table this tab writes to, and whether it still asks each run. The
+  // prompt sets both; this is where a tab that stopped asking starts again.
+  readonly getTableTarget: () => {
+    readonly name?: string;
+    readonly asksEachRun: boolean;
+  };
+  readonly setAsksEachRun: (asks: boolean) => void;
   readonly getExperimentFilter: () => ExperimentFilterState | undefined;
   readonly setExperimentFilter: (
     filter: ExperimentFilterState | undefined,

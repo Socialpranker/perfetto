@@ -98,8 +98,31 @@ export function renderStatusBox(tab: BigTraceEditorTab): m.Children {
   ]
     .filter(Boolean)
     .join(' ');
+  const tableName = tab.execution?.tableName;
+  const tableLink = tab.execution?.tableLink;
   const rightGroupContent = m(
     '.pf-bt-status-bar-group',
+    // Where the results landed. Only once the run has produced it, and only
+    // for a persistent run — the whole point of naming a table is being able
+    // to go back to it.
+    isTerminal &&
+      tableName !== undefined &&
+      tableName !== '' &&
+      m(
+        'span.pf-bt-status-bar-stat.pf-bt-status-bar-stat--table',
+        m('span.pf-bt-status-bar-stat-label', 'Table:'),
+        tableLink
+          ? m(
+              'a.pf-bt-status-bar-table-link',
+              {href: tableLink, target: '_blank', title: tableName},
+              tableName,
+            )
+          : m(
+              'span.pf-bt-status-bar-stat-value',
+              {title: tableName},
+              tableName,
+            ),
+      ),
     m(
       'span.pf-bt-status-bar-stat.pf-bt-status-bar-stat--traces',
       m('span.pf-bt-status-bar-stat-label', 'Traces:'),

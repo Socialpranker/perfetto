@@ -32,6 +32,7 @@ import {type HotkeyConfig, HotkeyContext} from '../widgets/hotkey_context';
 import {maybeRenderFullscreenModalDialog} from '../widgets/modal';
 import {initAssets} from '../base/assets';
 import {toggleHelp} from './help_modal';
+import {openPreferences} from './layout/preferences_button';
 
 function getRoot() {
   // Root for serving content, e.g. `http://origin/v1.2.3/`.
@@ -195,6 +196,12 @@ function registerCommands() {
       queryRightSidebarToggleFn?.();
     },
     defaultHotkey: '!Mod+Shift+B',
+  });
+
+  app.commands.registerCommand({
+    id: 'bigtrace.ShowPreferences',
+    name: 'Show preferences',
+    callback: () => openPreferences(),
   });
 
   app.commands.registerCommand({

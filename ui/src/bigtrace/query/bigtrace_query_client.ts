@@ -110,6 +110,20 @@ export interface ExecuteOptions {
   readonly traceLimit?: number;
   // Experiment/control pair and arm the query runs over.
   readonly experimentFilter?: ExperimentFilterSpec;
+  // What to call the table a persistent run writes to. Absent = let the
+  // backend name it.
+  readonly tableName?: string;
+  // How many days that table lives for. Independent of the name: the table
+  // exists either way.
+  readonly tableTtlDays?: number;
+}
+
+// What `/check_table_exists` says about a name before it is used.
+export interface TableNameCheck {
+  readonly exists: boolean;
+  // The name the backend would actually create, which may namespace or
+  // normalise what was asked for.
+  readonly resolvedTableName: string;
 }
 
 // One analysis preset from `GET /trace_presets`: display metadata plus a
@@ -333,6 +347,27 @@ export class BigtraceQueryClient {
     return result.experiment;
   }
 
+  // Whether a name is taken, and what the backend would really call it. Asked
+  // while the user types a table name.
+  async checkTableExists(
+    tableName: string,
+    signal?: AbortSignal,
+  ): Promise<TableNameCheck> {
+    const result = await this.requestJson<Partial<TableNameCheck>>(
+      '/check_table_exists',
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({table_name: tableName}),
+        signal,
+      },
+    );
+    return {
+      exists: result.exists === true,
+      resolvedTableName: result.resolvedTableName ?? tableName,
+    };
+  }
+
   async listTracePresets(
     signal?: AbortSignal,
   ): Promise<ReadonlyArray<TracePreset>> {
@@ -347,11 +382,15 @@ export class BigtraceQueryClient {
     return result.tracePresets ?? [];
   }
 
+  // `dropTable` also destroys the table the query wrote, and rides as a query
+  // parameter: DELETE carries no body under HTTP/gRPC transcoding.
   async deleteQueryExecution(
     uuid: string,
+    dropTable = false,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.request(`/query_executions/${uuid}`, {
+    const query = dropTable ? '?drop_table=true' : '';
+    await this.request(`/query_executions/${uuid}${query}`, {
       method: 'DELETE',
       signal,
     });
@@ -450,6 +489,14 @@ export class BigtraceQueryClient {
     }
     if (options?.experimentFilter !== undefined) {
       body.experiment_filter = experimentFilterToWire(options.experimentFilter);
+    }
+    // An empty name is the user asking the backend to choose one, which is
+    // what omitting the field means.
+    if (options?.tableName !== undefined && options.tableName !== '') {
+      body.table_name = options.tableName;
+    }
+    if (options?.tableTtlDays !== undefined && options.tableTtlDays > 0) {
+      body.table_ttl_days = options.tableTtlDays;
     }
     const result = await this.requestJson<QueryResponsePayload>(path, {
       method: 'POST',

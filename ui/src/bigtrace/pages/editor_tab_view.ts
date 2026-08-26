@@ -166,6 +166,21 @@ function buildTabBindings(
       applyModeDefaults(tab, materialize);
       tabsState.markDirty();
     },
+    getTableTtlDays: () => tab.tableTtlDays,
+    setTableTtlDays: (days) => {
+      if (days > 0) {
+        tab.tableTtlDays = days;
+        tabsState.markDirty();
+      }
+    },
+    getTableTarget: () => ({
+      name: tab.tableName,
+      asksEachRun: !tab.reuseTable,
+    }),
+    setAsksEachRun: (asks) => {
+      tab.reuseTable = !asks;
+      tabsState.markDirty();
+    },
     getExperimentFilter: () => tab.experimentFilter,
     setExperimentFilter: (filter) => {
       tab.experimentFilter = filter;

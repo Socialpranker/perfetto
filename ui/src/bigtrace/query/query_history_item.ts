@@ -26,7 +26,8 @@ import {
   statusDisplayLabel,
 } from './query_store';
 import {formatDate} from '../../base/time';
-import {showModal} from '../../widgets/modal';
+import {redrawModal, showModal} from '../../widgets/modal';
+import {Checkbox} from '../../widgets/checkbox';
 import {historyStore, formatCompactDate} from './history_store';
 
 // Reopens an existing history entry.
@@ -154,11 +155,15 @@ export function renderHistoryItem(
       m(Button, {
         onclick: async () => {
           if (!uuid) return;
+          const tableName = entry.tableName;
+          // Off every time: dropping is the destructive half, and deciding it
+          // afresh on each delete is the point of asking at all.
+          let dropTable = false;
           let confirmed = false;
           await showModal({
             title: 'Delete query from history?',
             content: () =>
-              m('div', [
+              m('.pf-bt-delete-confirm', [
                 startTime !== undefined &&
                   m(
                     'div.pf-bt-history-delete-date',
@@ -170,6 +175,16 @@ export function renderHistoryItem(
                   standalone: true,
                   onExpand: makeFullSqlExpander(uuid, entry.perfettoSql || ''),
                 }),
+                // Only when there is a table to drop; the history row goes
+                // either way.
+                tableName !== undefined &&
+                  renderDeleteCheckbox(
+                    `Also drop the table ${tableName}`,
+                    dropTable,
+                    (checked) => {
+                      dropTable = checked;
+                    },
+                  ),
               ]),
             buttons: [
               {text: 'Cancel'},
@@ -183,7 +198,10 @@ export function renderHistoryItem(
             ],
           });
           if (!confirmed) return;
-          await queryHistoryStorage.deleteQuery(uuid);
+          await queryHistoryStorage.deleteQuery(
+            uuid,
+            dropTable && tableName !== undefined,
+          );
           historyStore.refreshNow();
         },
         icon: Icons.Delete,
@@ -270,4 +288,24 @@ export function renderHistoryItem(
       onExpand: makeFullSqlExpander(uuid, queryText),
     }),
   );
+}
+
+// Same label-wrapping quirk as elsewhere: Checkbox hands the event to its
+// label, so the state comes from the input inside it.
+function renderDeleteCheckbox(
+  label: string,
+  checked: boolean,
+  onChange: (checked: boolean) => void,
+): m.Children {
+  return m(Checkbox, {
+    label,
+    checked,
+    onchange: (e: Event) => {
+      const target = e.currentTarget;
+      if (!(target instanceof HTMLLabelElement)) return;
+      const input = target.querySelector('input');
+      if (input) onChange(input.checked);
+      redrawModal();
+    },
+  });
 }

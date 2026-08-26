@@ -173,6 +173,15 @@ export class PollingController {
         if (endMs !== undefined && tab.queryUuid) {
           queryStore.update(tab.queryUuid, {endTime: endMs});
         }
+        // The table exists by now, so the tab can say which one it wrote —
+        // otherwise naming it has no visible outcome until History refreshes.
+        if (tab.queryUuid && (details.tableName ?? '') !== '') {
+          queryStore.update(tab.queryUuid, {
+            tableName: details.tableName,
+            tableLink: details.tableLink,
+          });
+          this.cb.redraw();
+        }
         if (isFailed && tab.queryResult !== undefined) {
           tab.queryResult.error = details.errorMessage || 'Query failed';
           this.cb.redraw();

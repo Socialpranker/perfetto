@@ -119,8 +119,10 @@ export class QueryHistoryStorage {
     );
   }
 
-  async deleteQuery(uuid: string): Promise<void> {
-    await this.client().deleteQueryExecution(uuid);
+  // `dropTable` also destroys the table the query wrote to, not just the
+  // history row.
+  async deleteQuery(uuid: string, dropTable = false): Promise<void> {
+    await this.client().deleteQueryExecution(uuid, dropTable);
   }
 
   // The listing endpoint clips perfettoSql; the per-uuid endpoint returns the

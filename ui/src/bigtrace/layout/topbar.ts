@@ -18,6 +18,7 @@ import {assetSrc} from '../../base/assets';
 import {Button} from '../../widgets/button';
 import {toggleHelp} from '../help_modal';
 import {ConnectionButton} from './connection_button';
+import {PreferencesButton} from './preferences_button';
 import {Omnibox} from './omnibox';
 
 // The app's only chrome: brand, command omnibox, and the backend connection.
@@ -31,6 +32,7 @@ export class Topbar implements m.ClassComponent {
       m(Omnibox),
       m('.pf-topbar__right', [
         m(ConnectionButton),
+        m(PreferencesButton),
         m(Button, {
           icon: 'help_outline',
           title: 'Help (?)',

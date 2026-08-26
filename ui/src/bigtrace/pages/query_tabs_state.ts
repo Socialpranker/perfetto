@@ -25,6 +25,7 @@ import type {
 import {queryStore, type QueryExecution} from '../query/query_store';
 import type {SettingCategory, SettingFilter} from '../settings/settings_types';
 import {bigTraceSettingsStorage} from '../settings/bigtrace_settings_storage';
+import {defaultModePref} from '../settings/run_prefs';
 
 const QUERY_TABS_STORAGE_KEY = 'bigtraceQueryTabs';
 const DEFAULT_SQL = '';
@@ -52,6 +53,11 @@ export interface ExperimentFilterState extends ExperimentFilterSpec {
   readonly experimentDenied?: boolean;
   readonly controlDenied?: boolean;
 }
+
+// How long a persistent run's table lives unless the tab says otherwise.
+// Unlike the row and trace caps this doesn't vary by execution mode: an
+// ephemeral run has no table, so there is no second value to define.
+export const DEFAULT_TABLE_TTL_DAYS = 30;
 
 export const TRACE_UUIDS_SETTING_ID = 'trace_uuids';
 
@@ -313,6 +319,12 @@ export interface TabConfigSnapshot {
   readonly traceMetadataColumns: ReadonlyArray<string> | null;
   readonly traceOrderBy: string;
   readonly experimentFilter: ExperimentFilterState | undefined;
+  // Everything the settings modal can touch has to be here, or its Cancel
+  // would put back only part of what was changed: the lifetime, and the
+  // table target its Result-table card edits.
+  readonly tableTtlDays: number;
+  readonly tableName: string | undefined;
+  readonly reuseTable: boolean;
   readonly limit: number;
   readonly traceLimit: number;
   readonly materialize: boolean;
@@ -341,6 +353,9 @@ export function snapshotTabConfig(tab: BigTraceEditorTab): TabConfigSnapshot {
       tab.traceMetadataColumns === null ? null : [...tab.traceMetadataColumns],
     traceOrderBy: tab.traceOrderBy,
     experimentFilter: copyExperimentFilter(tab.experimentFilter),
+    tableTtlDays: tab.tableTtlDays,
+    tableName: tab.tableName,
+    reuseTable: tab.reuseTable,
     limit: tab.limit,
     traceLimit: tab.traceLimit,
     materialize: tab.materialize,
@@ -358,6 +373,9 @@ export function restoreTabConfig(
     snap.traceMetadataColumns === null ? null : [...snap.traceMetadataColumns];
   tab.traceOrderBy = snap.traceOrderBy;
   tab.experimentFilter = copyExperimentFilter(snap.experimentFilter);
+  tab.tableTtlDays = snap.tableTtlDays;
+  tab.tableName = snap.tableName;
+  tab.reuseTable = snap.reuseTable;
   tab.limit = snap.limit;
   tab.traceLimit = snap.traceLimit;
   tab.materialize = snap.materialize;
@@ -407,6 +425,13 @@ export interface BigTraceEditorTab {
   // Which experiment/control pair and arm the query runs over; undefined =
   // no experiment filtering.
   experimentFilter?: ExperimentFilterState;
+  // The table a persistent run writes to. undefined = let the backend name
+  // it; reuseTable = the user said to keep using it here, so later runs in
+  // this tab don't ask again.
+  tableName?: string;
+  reuseTable: boolean;
+  // How long that table lives. A run parameter like the caps, not identity.
+  tableTtlDays: number;
   // Per-tab shown columns (display pref, persisted); null = show all.
   resultColumns: readonly string[] | null;
   // Per-tab disabled setting IDs, independent of global /settings. Seeded from
@@ -462,6 +487,9 @@ interface StoredTab {
   readonly traceMetadataColumns?: ReadonlyArray<string> | null;
   readonly traceOrderBy?: string;
   readonly experimentFilter?: ExperimentFilterState;
+  readonly tableName?: string;
+  readonly reuseTable?: boolean;
+  readonly tableTtlDays?: number;
   readonly resultColumns?: ReadonlyArray<string> | null;
   readonly disabledSettings?: ReadonlyArray<string>;
   readonly configured?: boolean;
@@ -531,8 +559,9 @@ export class QueryTabsState {
     // /query_executions/{uuid}); fresh tabs start from the backend defaults.
     const isFromStorage = stored !== undefined;
     const isFromHistory = queryUuid !== undefined && !isFromStorage;
-    // Default to persistent; ?? (not ||) keeps an explicit/restored ephemeral.
-    const isPersistent = materialize ?? true;
+    // The user's answer to "how should your queries run?" decides for a new
+    // tab; ?? (not ||) keeps an explicit or restored choice.
+    const isPersistent = materialize ?? defaultModePref.get() !== 'ephemeral';
     const querySettings: SettingFilter[] = isFromStorage
       ? [...(stored?.querySettings ?? [])]
       : isFromHistory
@@ -557,6 +586,16 @@ export class QueryTabsState {
     const experimentFilter = isFromStorage
       ? copyExperimentFilter(stored?.experimentFilter)
       : undefined;
+    // A restored tab keeps the table it was writing to; a fresh or
+    // history-reopened one starts without a target and asks on its next run.
+    const tableName = isFromStorage ? stored?.tableName : undefined;
+    const reuseTable = isFromStorage ? (stored?.reuseTable ?? false) : false;
+    const tableTtlDays =
+      isFromStorage &&
+      typeof stored?.tableTtlDays === 'number' &&
+      stored.tableTtlDays > 0
+        ? stored.tableTtlDays
+        : DEFAULT_TABLE_TTL_DAYS;
     const resultColumns: readonly string[] | null = isFromStorage
       ? (stored?.resultColumns ?? null)
       : null;
@@ -591,6 +630,9 @@ export class QueryTabsState {
       traceMetadataColumns,
       traceOrderBy,
       experimentFilter,
+      tableName,
+      reuseTable,
+      tableTtlDays,
       resultColumns,
       disabledSettings,
       lifecycle: new AbortController(),
@@ -640,6 +682,10 @@ export class QueryTabsState {
             : [...src.traceMetadataColumns],
         traceOrderBy: src.traceOrderBy,
         experimentFilter: copyExperimentFilter(src.experimentFilter),
+        // The lifetime is configuration and travels; the table's name is this
+        // query's identity and does not, or the clone would overwrite the
+        // original's results on its first run.
+        tableTtlDays: src.tableTtlDays,
         resultColumns: src.resultColumns,
         configured: true,
         lastPresetId: src.lastPresetId,
@@ -714,6 +760,9 @@ export class QueryTabsState {
         traceMetadataColumns: t.traceMetadataColumns,
         traceOrderBy: t.traceOrderBy,
         experimentFilter: t.experimentFilter,
+        tableName: t.tableName,
+        reuseTable: t.reuseTable,
+        tableTtlDays: t.tableTtlDays,
         resultColumns: t.resultColumns,
         disabledSettings: t.disabledSettings,
         configured: t.configured,

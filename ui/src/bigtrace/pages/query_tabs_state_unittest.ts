@@ -17,6 +17,7 @@ import {z} from 'zod';
 import {
   applyModeDefaults,
   applyPresetSetup,
+  DEFAULT_TABLE_TTL_DAYS,
   closeSettings,
   isTraceSelectionSetting,
   parseTraceUuids,
@@ -33,6 +34,7 @@ import {
   type BigTraceEditorTab,
 } from './query_tabs_state';
 import {bigTraceSettingsStorage} from '../settings/bigtrace_settings_storage';
+import {defaultModePref} from '../settings/run_prefs';
 
 function reg(
   id: string,
@@ -386,6 +388,7 @@ describe('Settings session (Cancel restores, Apply keeps)', () => {
         isTreatment: true,
         experimentName: 'an experiment',
       },
+      tableTtlDays: 30,
     });
   }
 
@@ -409,6 +412,7 @@ describe('Settings session (Cancel restores, Apply keeps)', () => {
       controlId: 888,
       isTreatment: false,
     };
+    tab.tableTtlDays = 7;
   }
 
   test('opening keeps the tab configured and starts a session', () => {
@@ -788,5 +792,166 @@ describe('experiment filter', () => {
       isTreatment: true,
     });
     expect(tab.experimentFilter?.experimentName).toBeUndefined();
+  });
+});
+
+describe('the table a saved query writes to', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    bigTraceSettingsStorage.clear();
+  });
+
+  test('a new query keeps its results for thirty days', () => {
+    const tabs = new QueryTabsState();
+    const tab = tabs.addNewTab();
+    expect(tab.tableTtlDays).toBe(DEFAULT_TABLE_TTL_DAYS);
+    expect(DEFAULT_TABLE_TTL_DAYS).toBe(30);
+  });
+
+  test('a new query has no table of its own yet', () => {
+    const tab = new QueryTabsState().addNewTab();
+    expect(tab.tableName).toBeUndefined();
+    expect(tab.reuseTable).toBe(false);
+  });
+
+  test('the table and its lifetime survive a reload', () => {
+    const tabs = new QueryTabsState();
+    const tab = tabs.addNewTab(undefined, 'select 1');
+    tab.configured = true;
+    tab.tableName = 'jank_by_device';
+    tab.reuseTable = true;
+    tab.tableTtlDays = 90;
+    (tabs as unknown as {saveToStorage: () => void}).saveToStorage();
+
+    const reloaded = new QueryTabsState().tabs.find(
+      (t) => t.editorText === 'select 1',
+    );
+    expect(reloaded?.tableName).toBe('jank_by_device');
+    expect(reloaded?.reuseTable).toBe(true);
+    expect(reloaded?.tableTtlDays).toBe(90);
+  });
+
+  test('a tab stored before tables were nameable keeps the default', () => {
+    localStorage.setItem(
+      'bigtraceQueryTabs',
+      JSON.stringify({
+        tabs: [
+          {
+            id: 'a',
+            title: 'Query 1',
+            editorText: 'select 1',
+            limit: 1000,
+            materialize: true,
+            configured: true,
+          },
+        ],
+        activeTabId: 'a',
+      }),
+    );
+    const tab = new QueryTabsState().tabs[0];
+    expect(tab.tableTtlDays).toBe(DEFAULT_TABLE_TTL_DAYS);
+    expect(tab.tableName).toBeUndefined();
+  });
+
+  test('a clone takes the lifetime but not the table', () => {
+    const tabs = new QueryTabsState();
+    const src = tabs.addNewTab(undefined, 'select 1');
+    src.configured = true;
+    src.tableName = 'jank_by_device';
+    src.reuseTable = true;
+    src.tableTtlDays = 90;
+
+    const clone = tabs.cloneTab(src.id);
+    // Configuration travels...
+    expect(clone?.tableTtlDays).toBe(90);
+    // ...but not the identity: a clone must not overwrite the original's
+    // results the first time it runs.
+    expect(clone?.tableName).toBeUndefined();
+    expect(clone?.reuseTable).toBe(false);
+  });
+
+  test('Cancel in the settings modal puts the lifetime back', () => {
+    const tab = fakeTab({configured: true, tableTtlDays: 30});
+    openSettings(tab);
+    tab.tableTtlDays = 7;
+    closeSettings(tab, {keep: false});
+    expect(tab.tableTtlDays).toBe(30);
+  });
+
+  test('Apply keeps an edited lifetime', () => {
+    const tab = fakeTab({configured: true, tableTtlDays: 30});
+    openSettings(tab);
+    tab.tableTtlDays = 7;
+    closeSettings(tab, {keep: true});
+    expect(tab.tableTtlDays).toBe(7);
+  });
+
+  test('Cancel puts the table target back too', () => {
+    // The settings modal's Result-table card edits `reuseTable`, so Cancel
+    // has to revert it like every other control on that surface.
+    const tab = fakeTab({
+      configured: true,
+      tableName: 'jank_by_device',
+      reuseTable: true,
+    });
+    openSettings(tab);
+    tab.reuseTable = false;
+    tab.tableName = 'something_else';
+    closeSettings(tab, {keep: false});
+    expect(tab.tableName).toBe('jank_by_device');
+    expect(tab.reuseTable).toBe(true);
+  });
+
+  test('Apply keeps an edited table target', () => {
+    const tab = fakeTab({configured: true, tableName: 'a', reuseTable: true});
+    openSettings(tab);
+    tab.reuseTable = false;
+    closeSettings(tab, {keep: true});
+    expect(tab.reuseTable).toBe(false);
+  });
+
+  test('a preset says nothing about where results are written', () => {
+    const tab = fakeTab({
+      tableName: 'jank_by_device',
+      reuseTable: true,
+      tableTtlDays: 90,
+    });
+    applyPresetSetup(tab, {
+      id: 'p',
+      category: '',
+      name: 'p',
+      description: '',
+      perfettoSql: 'select 1',
+    });
+    expect(tab.tableName).toBe('jank_by_device');
+    expect(tab.reuseTable).toBe(true);
+    expect(tab.tableTtlDays).toBe(90);
+  });
+});
+
+describe('how a new query runs', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    bigTraceSettingsStorage.clear();
+  });
+
+  test('unasked, a new query is persistent as before', () => {
+    expect(new QueryTabsState().addNewTab().materialize).toBe(true);
+  });
+
+  test('a new query follows the answer given', () => {
+    defaultModePref.set('ephemeral');
+    expect(new QueryTabsState().addNewTab().materialize).toBe(false);
+    defaultModePref.set('persistent');
+    expect(new QueryTabsState().addNewTab().materialize).toBe(true);
+  });
+
+  test('an explicit choice still wins over the preference', () => {
+    defaultModePref.set('ephemeral');
+    const tabs = new QueryTabsState();
+    // History reopen and Clone pass the mode the query actually ran with.
+    expect(
+      tabs.addNewTab('t', 'select 1', undefined, undefined, true).materialize,
+    ).toBe(true);
   });
 });

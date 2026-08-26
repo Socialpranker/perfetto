@@ -644,6 +644,28 @@ export class QuerySettingsForm implements m.ClassComponent<QuerySettingsFormAttr
   // column, each /trace_metadata_schema `description` as its hover tooltip.
   // The columns shown in the grid are the trace_metadata_columns attached to
   // every query result row — one picker for both.
+  // Where this query's results go, and the way back to being asked each run:
+  // "Keep using this table for this query" is otherwise a door that only
+  // locks.
+  private renderTableTargetCard(): m.Children {
+    const target = this.bindings.getTableTarget();
+    const writesTo =
+      target.name === undefined
+        ? 'A name chosen by the backend.'
+        : `Writes to ${target.name}.`;
+    return m(BigTraceSettingsCard, {
+      title: 'Result table',
+      description: target.asksEachRun
+        ? `${writesTo} Each run asks first.`
+        : `${writesTo} Runs no longer ask.`,
+      controls: m(Button, {
+        label: 'Ask each run',
+        disabled: target.asksEachRun,
+        onclick: () => this.bindings.setAsksEachRun(true),
+      }),
+    });
+  }
+
   private renderColumnPicker(
     schemaCols: ReadonlyArray<TraceColumnDescriptor>,
     chosen: ReadonlyArray<string>,
@@ -872,6 +894,21 @@ export class QuerySettingsForm implements m.ClassComponent<QuerySettingsFormAttr
               onInput: (value: string) => {
                 const n = parseInt(value, 10);
                 if (!isNaN(n) && n > 0) this.bindings.setTraceLimit(n);
+              },
+            }),
+          }),
+          this.renderTableTargetCard(),
+          m(BigTraceSettingsCard, {
+            title: 'Table lifetime',
+            description:
+              'How many days the table a persistent query writes to is ' +
+              'kept for. Applies whether the table is named or not.',
+            controls: m(TextInput, {
+              type: 'number',
+              value: String(this.bindings.getTableTtlDays()),
+              onInput: (value: string) => {
+                const n = parseInt(value, 10);
+                if (!isNaN(n) && n > 0) this.bindings.setTableTtlDays(n);
               },
             }),
           }),
