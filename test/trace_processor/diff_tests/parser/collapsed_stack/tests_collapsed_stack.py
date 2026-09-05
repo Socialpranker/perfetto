@@ -16,6 +16,7 @@
 from python.generators.diff_tests.testing import DataPath
 from python.generators.diff_tests.testing import Csv
 from python.generators.diff_tests.testing import DiffTestBlueprint
+from python.generators.diff_tests.testing import RawText
 from python.generators.diff_tests.testing import TestSuite
 
 
@@ -100,4 +101,20 @@ class CollapsedStackParser(TestSuite):
         out=Csv("""
         "total_count"
         1700.000000
+        """))
+
+  def test_collapsed_stack_single_frame(self):
+    return DiffTestBlueprint(
+        trace=RawText("""
+        main 5
+        main 3
+        main 2
+        """),
+        query="""
+        SELECT COUNT(*) as sample_count
+        FROM __intrinsic_aggregate_sample;
+        """,
+        out=Csv("""
+        "sample_count"
+        3
         """))

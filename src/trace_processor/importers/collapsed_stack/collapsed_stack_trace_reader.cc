@@ -193,14 +193,9 @@ bool IsCollapsedStackLine(const char* line_start, size_t line_len) {
     }
   }
 
-  bool has_semicolon = false;
-  for (size_t i = 0; i < last_space; ++i) {
-    if (line[i] == ';') {
-      has_semicolon = true;
-      break;
-    }
-  }
-  return has_semicolon;
+  // A single-frame stack (no ';') is valid collapsed-stack input; the
+  // parser (ParseLine) already handles it correctly.
+  return true;
 }
 
 bool IsCollapsedStackFormat(const uint8_t* data, size_t size) {
